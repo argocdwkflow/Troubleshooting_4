@@ -1,0 +1,1 @@
+Le reboot a corrigé le problème car il a réinitialisé l’état du client NFS (sessions, verrous, caches) et relancé le montage après stabilisation du réseau/DNS. Le symptôme initial est un timeout de collecte d’état du montage (Ansible/systemd) typique d’un mount NFS bloqué ou d’une dépendance réseau non satisfaite au moment du montage
