@@ -1,0 +1,166 @@
+Parfait — je te fais une matrice claire et exploitable des ports à ouvrir entre Ansible AAP, Red Hat Satellite et les Capsules, en distinguant Satellite connecté vs Satellite disconnected (air-gapped), exactement comme demandé.
+Je m’appuie sur la doc officielle Red Hat Satellite 6.17 – Port and Firewall Requirements � et sur les flux AAP standard.
+Red_Hat_Satellite-6.17-Installing_Satellite_Server_in_a_connected_network_environment-en-US.pdf None
+1️⃣ Flux Ansible AAP ↔ Satellite / Capsule (cas général)
+🎯 Objectif
+Inventaires dynamiques Satellite
+Exécution de jobs Ansible depuis AAP
+Callback / résultats
+API & Remote Execution
+🔓 Ports requis
+Source
+Destination
+Port
+Proto
+Usage
+AAP Controller / Execution Node
+Satellite Server
+443
+TCP
+API Satellite, inventories dynamiques, credentials, facts
+AAP Controller / Execution Node
+Capsule
+443
+TCP
+API Capsule (si REX ou content via Capsule)
+Satellite
+AAP Controller
+443
+TCP
+Callback Ansible, job events
+AAP Execution Node
+Managed Hosts
+22
+TCP
+SSH (Ansible push)
+Managed Hosts
+AAP
+443
+TCP
+Callback (ansible-runner, AWX callback)
+👉 Minimum vital AAP ↔ Satellite : TCP 443 uniquement
+2️⃣ Flux Satellite ↔ Capsule (connected & disconnected)
+🔓 Ports obligatoires
+Source
+Destination
+Port
+Proto
+Usage
+Capsule
+Satellite
+443
+TCP
+API Satellite, sync metadata
+Satellite
+Capsule
+443
+TCP
+Gestion Capsule, templates, REX
+Satellite
+Capsule
+9090
+TCP
+Smart Proxy API
+Capsule
+Satellite
+80 / 443
+TCP
+Content mirroring (selon config)
+📌 9090 = Smart Proxy obligatoire, souvent oublié par les équipes réseau.
+3️⃣ Flux Satellite Disconnected (Air-Gapped)
+🔒 Spécificités
+❌ Aucun accès CDN Red Hat
+❌ Pas de console.redhat.com
+✅ Sync via export/import (ISS, ISO, rsync offline)
+✅ AAP reste interne
+🔓 Ports internes uniquement
+Source
+Destination
+Port
+Proto
+Usage
+AAP
+Satellite
+443
+TCP
+API / Inventaires
+Satellite
+Capsule
+443
+TCP
+Content & API
+Satellite
+Capsule
+9090
+TCP
+Smart Proxy
+Capsule
+Hosts
+443 / 80
+TCP
+Content
+AAP
+Hosts
+22
+TCP
+Ansible
+🚫 Aucun port sortant Internet requis
+4️⃣ Flux Satellite Connected
+🔓 Ports sortants supplémentaires (Satellite uniquement)
+Destination
+Port
+Usage
+cdn.redhat.com
+443
+Sync contenu
+subscription.rhsm.redhat.com
+443
+Subscriptions
+console.redhat.com
+443
+Insights
+connect.cloud.redhat.com
+443
+MQTT / telemetry
+cert-api.access.redhat.com
+443
+Certs
+⚠️ AAP n’a PAS besoin d’accès Internet, même en Satellite connected.
+5️⃣ Remote Execution (optionnel mais fréquent)
+Push (SSH)
+Source
+Destination
+Port
+Satellite / Capsule
+Hosts
+22
+Pull (MQTT – très utilisé en zones sécurisées)
+Source
+Destination
+Port
+Hosts
+Satellite / Capsule
+1883 TCP
+6️⃣ Résumé “one-page” pour réseau / sécurité
+✅ Ports minimum à ouvrir
+Copy code
+
+AAP → Satellite : 443
+Satellite ↔ Capsule : 443, 9090
+AAP → Hosts : 22
+Capsule → Hosts : 443 (80 optionnel)
+❌ À ne PAS ouvrir
+AAP → Internet
+Hosts → Internet
+Capsule → Internet (en disconnected)
+7️⃣ Recommandation architecture (best practice)
+AAP ne parle jamais directement aux repos
+Tout passe par Satellite / Capsule
+443 only policy possible (hors SSH)
+Pull-REX + AAP = zéro flux entrant vers hosts
+Si tu veux, je peux te fournir :
+🔹 une matrice flux Excel / CSV
+🔹 un schéma réseau ASCII ou PPT
+🔹 une version prête ServiceNow / firewall request
+🔹 ou une comparaison CIS / PROD / DMZ
+Dis-moi 👍
