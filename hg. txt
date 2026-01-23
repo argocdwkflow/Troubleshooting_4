@@ -1,9 +1,0 @@
-Hello,
-
-Following the completion of the performance and sizing study for the Red Hat Satellite platform, and in line with official Red Hat best-practice recommendations, we have identified the need to increase resources to 48 vCPU and 256 GB RAM in order to ensure optimal performance, stability, and scalability.
-
-Based on the information we have regarding the requirement for a VMware exception when thresholds are exceeded (vCPU > 24 and/or RAM > 192 GB), we have already created a ServiceNow change request to formally track this activity.
-
-The scope of the completed study and optimization actions includes, among others:
-
-- D
