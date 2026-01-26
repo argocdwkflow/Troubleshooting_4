@@ -1,0 +1,27 @@
+
+🇫🇷 Résumé en français
+Date / heure de l’incident : 24 janvier à 16h20
+L’incident a été déclenché par une saturation du pool de threads du composant Micro Focus Communications Server (mfcs32).
+À l’heure de l’événement, plusieurs régions Enterprise Server étaient actives simultanément et des traitements applicatifs (notamment batch/JCL) étaient en cours, entraînant une augmentation significative de la concurrence et de la latence d’exécution des threads.
+Lorsque le seuil de latence configuré a été dépassé, le Thread Manager Micro Focus a tenté de créer des threads temporaires supplémentaires, mais cette tentative a échoué en raison de l’atteinte de la limite du pool de threads.
+Aucun défaut matériel, système Linux ou kernel n’a été identifié.
+Une vérification des limites système (ulimit) est nécessaire afin de garantir que le système d’exploitation ne restreint pas la création de threads. Toutefois, dans un environnement géré par systemd, la limite TasksMax et les paramètres de service ont une priorité supérieure et doivent impérativement être alignés avec la charge applicative.
+La cause racine de l’incident est donc une configuration insuffisante du pool de threads Micro Focus, aggravée par un pic de charge applicative, et potentiellement par des limites systemd / ulimit non adaptées.
+Actions correctives recommandées
+Augmenter la limite du pool de threads côté Micro Focus Communications Server.
+Vérifier et ajuster les paramètres systemd (TasksMax, LimitNPROC, LimitNOFILE).
+Vérifier et aligner les limites ulimit pour l’utilisateur Micro Focus.
+Surveiller le nombre de threads et lisser les traitements batch afin d’éviter les pics simultanés.
+🇬🇧 Global summary in English
+Incident date / time: January 24th at 16:20
+The incident was triggered by a thread pool saturation on the Micro Focus Communications Server component (mfcs32).
+At the time of the event, multiple Enterprise Server regions were running concurrently while application workloads (notably batch/JCL processing) were executing, resulting in increased concurrency and thread execution latency.
+When the configured latency threshold was exceeded, the Micro Focus Thread Manager attempted to create additional temporary threads, but this operation failed due to the configured thread pool limit being reached.
+No Linux OS, kernel, or hardware failure was identified during the analysis.
+A review of the system limits (ulimit) is required to ensure that the operating system does not restrict thread creation. However, in a systemd-managed environment, the TasksMax setting and service-level limits take precedence and must be properly aligned with the application workload.
+The root cause of the incident is therefore an undersized Micro Focus thread pool configuration, exacerbated by an application workload peak, and potentially reinforced by systemd and ulimit limits that were not adequately sized.
+Recommended corrective actions
+Increase the Micro Focus Communications Server thread pool limits.
+Review and adjust systemd service limits (TasksMax, LimitNPROC, LimitNOFILE).
+Verify and align ulimit settings for the Micro Focus runtime user.
+Monitor thread consumption and smooth batch execution to prevent concurrent workload spikes.
