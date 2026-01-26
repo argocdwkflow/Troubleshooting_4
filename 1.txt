@@ -1,0 +1,1 @@
+Although the vmbus.sys file exists by default on Windows Server systems, a recent Windows update caused Hyper-V components to be activated or required during boot. On a VMware ESXi virtual machine, this led Windows to attempt loading the Hyper-V driver, resulting in a boot failure (0xc0000098).
