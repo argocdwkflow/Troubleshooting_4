@@ -1,0 +1,25 @@
+Parfait — voici un message clair, propre et orienté décision, prêt à envoyer à ton chef.
+J’ai corrigé la forme, structuré l’info, et gardé un ton N3 / architecte.
+Email
+Subject
+RHEL for SAP – Repositories disponibles et choix d’architecture Satellite
+Bonjour,
+Pour information, dans le cadre de notre contrat Red Hat actuel, nous avons plusieurs repositories RHEL for SAP disponibles côté Red Hat CDN (visibles via les souscriptions), incluant RHEL 7 à RHEL 10, ainsi que les canaux SAP / EUS / ELS associés.
+À ce stade :
+ces repositories sont disponibles sur le CDN Red Hat,
+mais ils ne sont pas encore intégrés ni synchronisés dans notre Red Hat Satellite.
+Avant d’aller plus loin, je voulais avoir ton avis sur l’architecture Satellite à privilégier pour le périmètre SAP :
+👉 Souhaites-tu la création d’une organisation Satellite dédiée pour RHEL for SAP, afin de :
+isoler les repositories SAP des flux RHEL standards,
+maîtriser plus finement les Content Views et cycles de vie,
+clarifier le périmètre SAP (RISE / certification / support),
+👉 ou préfères-tu une gestion via des Content Views dédiées dans l’organisation existante ?
+Les deux approches sont techniquement viables ; le choix dépend surtout des attentes en termes de gouvernance, d’isolation et d’audit.
+Dis-moi ce que tu préfères.
+Cordialement,
+🔹 Variante ultra-courte (si tu veux aller droit au but)
+Nous avons des repos RHEL for SAP disponibles sur le CDN Red Hat via le contrat actuel, mais non encore intégrés dans Satellite. Souhaites-tu une organisation Satellite dédiée pour SAP ou une gestion via Content Views dans l’organisation existante ?
+Si tu veux, je peux aussi te préparer :
+un comparatif clair (organisation dédiée vs CV),
+ou une recommandation argumentée si tu veux pousser une option.
+Très bonne approche de gouvernance 👍
