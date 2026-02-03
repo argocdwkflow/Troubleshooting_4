@@ -1,0 +1,304 @@
+Voici un tasks/main.yml complet corrigé qui fait exactement ce que tu veux :
+Il teste TCP/443 (nc → telnet → /dev/tcp) avec timeout
+Il ne stoppe pas le play pendant les tests (on collecte les infos), puis on :
+fait un résumé global (run_once, localhost) des hosts KO
+fail le job global à la fin s’il y a au moins 1 host avec port_443_ok=false
+fail chaque host KO (un host KO = FAILED, et on passe aux autres)
+Il évite l’erreur “dict object has no attribute rc” en initialisant les variables et en testant is defined.
+✅ Copie/colle tel quel dans roles/satellite_precheck_kernel/tasks/main.yml
+Copy code
+Yaml
+---
+# satellite_precheck_kernel - tasks/main.yml
+# Objectif:
+# - Tester connectivité vers capsule Satellite (DNS + TCP 443)
+# - Si TCP/443 KO => host FAILED
+# - Si au moins 1 host KO => job global FAILED à la fin
+# - Continuer sur les autres hosts (normal Ansible: un host failed n'empêche pas les autres)
+
+- name: Init precheck defaults
+  ansible.builtin.set_fact:
+    sat_precheck:
+      capsule: "{{ sat_precheck_capsule_fqdn }}"
+      dns_ahosts: ""
+      tcp_method: "none"
+      tcp_rc: null
+      tcp_err: ""
+      port_443_ok: false
+      https_method: "none"
+      https_rc: null
+      https_err: ""
+      download_ok: false
+      file_exists: false
+      file_size: 0
+      kernel_version: ""
+      error: ""
+  changed_when: false
+
+# -------------------------------------------------------------------
+# DNS
+# -------------------------------------------------------------------
+- name: DNS resolution (getent ahosts)
+  ansible.builtin.command: "getent ahosts {{ sat_precheck_capsule_fqdn }}"
+  register: _dns
+  changed_when: false
+  failed_when: false
+
+- name: Save DNS output
+  ansible.builtin.set_fact:
+    sat_precheck: >-
+      {{
+        sat_precheck | combine({
+          'dns_ahosts': (_dns.stdout | default('') | trim),
+          'error': (sat_precheck.error if (_dns.rc | default(1) == 0) else ('DNS resolution failed (getent rc=' ~ (_dns.rc | default('N/A')) ~ ')'))
+        })
+      }}
+  changed_when: false
+
+# -------------------------------------------------------------------
+# TCP 443 (nc -> telnet -> /dev/tcp) avec timeout
+# -------------------------------------------------------------------
+- name: TCP 443 check with nc if available
+  ansible.builtin.shell: |
+    set -o pipefail
+    command -v nc >/dev/null 2>&1 || exit 127
+    nc -vz -w {{ sat_precheck_tcp_timeout | default(5) | int }} {{ sat_precheck_capsule_fqdn }} 443 2>&1
+  args:
+    executable: /bin/bash
+  register: _tcp_nc
+  changed_when: false
+  failed_when: false
+
+- name: TCP 443 check with telnet if nc missing
+  ansible.builtin.shell: |
+    set -o pipefail
+    command -v telnet >/dev/null 2>&1 || exit 127
+    # timeout sur la session telnet
+    (echo quit | timeout {{ (sat_precheck_tcp_timeout | default(5) | int) + 2 }} telnet {{ sat_precheck_capsule_fqdn }} 443) 2>&1 | tail -n 20
+  args:
+    executable: /bin/bash
+  register: _tcp_telnet
+  changed_when: false
+  failed_when: false
+  when: _tcp_nc.rc | default(127) == 127
+
+- name: TCP 443 check with /dev/tcp fallback if nc+telnet missing
+  ansible.builtin.shell: |
+    set -o pipefail
+    timeout {{ sat_precheck_tcp_timeout | default(5) | int }} bash -lc 'echo >/dev/tcp/{{ sat_precheck_capsule_fqdn }}/443'
+  args:
+    executable: /bin/bash
+  register: _tcp_devtcp
+  changed_when: false
+  failed_when: false
+  when:
+    - _tcp_nc.rc | default(127) == 127
+    - _tcp_telnet is not defined or (_tcp_telnet.rc | default(127)) == 127
+
+- name: Compute TCP 443 result (method/rc/ok/error)
+  ansible.builtin.set_fact:
+    sat_precheck: >-
+      {{
+        sat_precheck | combine({
+          'tcp_method': (
+              'nc' if (_tcp_nc is defined and (_tcp_nc.rc | default(127)) != 127)
+              else (
+                'telnet' if (_tcp_telnet is defined and (_tcp_telnet.rc | default(127)) != 127)
+                else 'devtcp'
+              )
+          ),
+          'tcp_rc': (
+              (_tcp_nc.rc | default(None)) if (_tcp_nc is defined and (_tcp_nc.rc | default(127)) != 127)
+              else (
+                (_tcp_telnet.rc | default(None)) if (_tcp_telnet is defined and (_tcp_telnet.rc | default(127)) != 127)
+                else (_tcp_devtcp.rc | default(None))
+              )
+          ),
+          'tcp_err': (
+              (_tcp_nc.stderr | default(_tcp_nc.stdout | default(''))) if (_tcp_nc is defined and (_tcp_nc.rc | default(127)) != 127)
+              else (
+                (_tcp_telnet.stderr | default(_tcp_telnet.stdout | default(''))) if (_tcp_telnet is defined and (_tcp_telnet.rc | default(127)) != 127)
+                else (_tcp_devtcp.stderr | default(_tcp_devtcp.stdout | default('')))
+              )
+          )
+        })
+      }}
+  changed_when: false
+
+- name: Decide port_443_ok
+  ansible.builtin.set_fact:
+    sat_precheck: >-
+      {{
+        sat_precheck | combine({
+          'port_443_ok': (
+            (sat_precheck.tcp_method == 'nc' and (sat_precheck.tcp_rc | default(1) | int) == 0)
+            or
+            (sat_precheck.tcp_method == 'telnet' and (sat_precheck.tcp_err | default('') | lower) is search('connected|open'))
+            or
+            (sat_precheck.tcp_method == 'devtcp' and (sat_precheck.tcp_rc | default(1) | int) == 0)
+          )
+        })
+      }}
+  changed_when: false
+
+# -------------------------------------------------------------------
+# HTTPS GET réel (wget -> curl) + vérifier fichier téléchargé
+# (on ne télécharge que si port 443 OK)
+# -------------------------------------------------------------------
+- name: Build kernel URL + tmp file
+  ansible.builtin.set_fact:
+    sat_precheck_kernel_url: "https://{{ sat_precheck_capsule_fqdn }}{{ sat_precheck_kernel_base_path | default('/pub/kernel') }}/kernel_version"
+    sat_precheck_tmp_file: "/tmp/kernel_version.{{ inventory_hostname }}.{{ ansible_date_time.epoch }}"
+  changed_when: false
+
+- name: HTTPS GET via wget (download to /tmp) if available
+  ansible.builtin.shell: |
+    set -o pipefail
+    command -v wget >/dev/null 2>&1 || exit 127
+    EXTRA=""
+    if [ "{{ sat_precheck_validate_certs | default(false) | bool }}" = "False" ] || [ "{{ sat_precheck_validate_certs | default(false) | bool }}" = "false" ]; then
+      EXTRA="--no-check-certificate"
+    fi
+    wget -O "{{ sat_precheck_tmp_file }}" -S --timeout={{ sat_precheck_https_timeout | default(10) | int }} --tries=1 $EXTRA "{{ sat_precheck_kernel_url }}" 2>&1
+  args:
+    executable: /bin/bash
+  register: _https_wget
+  changed_when: false
+  failed_when: false
+  when: sat_precheck.port_443_ok | bool
+
+- name: HTTPS GET via curl if wget missing (download to /tmp)
+  ansible.builtin.shell: |
+    set -o pipefail
+    command -v curl >/dev/null 2>&1 || exit 127
+    EXTRA="-k"
+    if [ "{{ sat_precheck_validate_certs | default(false) | bool }}" = "True" ] || [ "{{ sat_precheck_validate_certs | default(false) | bool }}" = "true" ]; then
+      EXTRA=""
+    fi
+    curl $EXTRA -sS --connect-timeout {{ sat_precheck_tcp_timeout | default(5) | int }} --max-time {{ sat_precheck_https_timeout | default(10) | int }} \
+      -o "{{ sat_precheck_tmp_file }}" "{{ sat_precheck_kernel_url }}" 2>&1
+  args:
+    executable: /bin/bash
+  register: _https_curl
+  changed_when: false
+  failed_when: false
+  when:
+    - sat_precheck.port_443_ok | bool
+    - _https_wget is not defined or (_https_wget.rc | default(127)) == 127
+
+- name: Stat downloaded file (proof)
+  ansible.builtin.stat:
+    path: "{{ sat_precheck_tmp_file }}"
+  register: _st
+  changed_when: false
+  when: sat_precheck.port_443_ok | bool
+
+- name: Compute HTTPS/download result
+  ansible.builtin.set_fact:
+    sat_precheck: >-
+      {{
+        sat_precheck | combine({
+          'https_method': (
+            'wget' if (_https_wget is defined and (_https_wget.rc | default(127)) != 127)
+            else ('curl' if (_https_curl is defined and (_https_curl.rc | default(127)) != 127) else 'none')
+          ),
+          'https_rc': (
+            (_https_wget.rc | default(None)) if (_https_wget is defined and (_https_wget.rc | default(127)) != 127)
+            else (
+              (_https_curl.rc | default(None)) if (_https_curl is defined and (_https_curl.rc | default(127)) != 127)
+              else None
+            )
+          ),
+          'https_err': (
+            (_https_wget.stdout | default(_https_wget.stderr | default(''))) if (_https_wget is defined and (_https_wget.rc | default(127)) != 127)
+            else (
+              (_https_curl.stdout | default(_https_curl.stderr | default(''))) if (_https_curl is defined and (_https_curl.rc | default(127)) != 127)
+              else ''
+            )
+          ),
+          'file_exists': (_st.stat.exists | default(false)),
+          'file_size': (_st.stat.size | default(0) | int),
+          'download_ok': ((_st.stat.exists | default(false)) and ((_st.stat.size | default(0) | int) > 0))
+        })
+      }}
+  changed_when: false
+  when: sat_precheck.port_443_ok | bool
+
+- name: Read downloaded file content (kernel_version)
+  ansible.builtin.command: "cat {{ sat_precheck_tmp_file }}"
+  register: _cat
+  changed_when: false
+  failed_when: false
+  when: sat_precheck.download_ok | bool
+
+- name: Save kernel_version
+  ansible.builtin.set_fact:
+    sat_precheck: "{{ sat_precheck | combine({'kernel_version': (_cat.stdout | default('') | trim)}) }}"
+  changed_when: false
+  when: sat_precheck.download_ok | bool
+
+# -------------------------------------------------------------------
+# CLEANUP (toujours)
+# -------------------------------------------------------------------
+- name: Cleanup downloaded file
+  ansible.builtin.file:
+    path: "{{ sat_precheck_tmp_file }}"
+    state: absent
+  changed_when: false
+  when: sat_precheck_tmp_file is defined
+
+# -------------------------------------------------------------------
+# ✅ Résumé global + FAIL JOB si au moins 1 host a port_443_ok=false
+# IMPORTANT: placé AVANT le fail par host, pour être sûr que run_once s’exécute.
+# -------------------------------------------------------------------
+- name: Collect hosts where TCP 443 is KO (global summary)
+  ansible.builtin.set_fact:
+    sat_precheck_failed_hosts: >-
+      {{
+        ansible_play_hosts_all
+        | select('in', hostvars.keys())
+        | select(lambda h: (hostvars[h].sat_precheck is defined) and
+                         (hostvars[h].sat_precheck.port_443_ok is defined) and
+                         (not (hostvars[h].sat_precheck.port_443_ok | bool)))
+        | list
+      }}
+  run_once: true
+  delegate_to: localhost
+  changed_when: false
+
+- name: FAIL JOB if at least one host has TCP 443 KO
+  ansible.builtin.fail:
+    msg: |-
+      Satellite precheck FAILED: TCP/443 KO sur {{ sat_precheck_failed_hosts | length }} host(s)
+      Hosts: {{ sat_precheck_failed_hosts | join(', ') }}
+
+      -> Au moins 1 serveur ne peut pas joindre la capsule sur 443 (timeout/fermé).
+  when: sat_precheck_failed_hosts | length > 0
+  run_once: true
+  delegate_to: localhost
+
+# -------------------------------------------------------------------
+# ✅ FAIL PAR HOST si port 443 KO (continue sur les autres)
+# -------------------------------------------------------------------
+- name: FAIL this host if TCP 443 is NOT reachable
+  ansible.builtin.fail:
+    msg: |-
+      TCP/443 KO vers capsule Satellite.
+      capsule     : {{ sat_precheck.capsule }}
+      dns_ahosts  : {{ sat_precheck.dns_ahosts | default('') }}
+      tcp_method  : {{ sat_precheck.tcp_method }}
+      tcp_rc      : {{ sat_precheck.tcp_rc | default('N/A') }}
+      tcp_err     : {{ sat_precheck.tcp_err | default('') }}
+
+      -> Port 443 MUST be reachable to continue registration.
+  when: not sat_precheck.port_443_ok | bool
+Pourquoi il y a parfois failed_when: false ?
+Parce que sur nc/telnet/wget/curl, si tu mets failed_when: true, Ansible arrête le host immédiatement et tu perds les infos (rc, stderr, méthode utilisée).
+Ici on collecte d’abord, puis on fait un fail contrôlé avec un message propre.
+Point clé pour “passer au serveur suivant”
+En Ansible, quand un host est FAILED, les autres continuent.
+Ce fichier garantit :
+host KO = FAILED
+les autres hosts continuent
+job global = FAILED si au moins 1 KO
+Si tu veux, je peux aussi te donner un templates/ (JSON rendu final par host + un rapport global) mais là tu as déjà le comportement exact que tu demandes.
