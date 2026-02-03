@@ -1,0 +1,28 @@
+---
+galaxy_info:
+  role_name: satellite_precheck_kernel
+  author: OBS Linux Team
+  description: >
+    Precheck Satellite capsule connectivity (DNS, TCP 443, HTTPS GET)
+    and kernel version availability before kernel operations.
+  company: Orange OBS
+  license: proprietary
+
+  min_ansible_version: "2.14"
+
+  platforms:
+    - name: EL
+      versions:
+        - "7"
+        - "8"
+        - "9"
+
+  galaxy_tags:
+    - satellite
+    - redhat
+    - rhel
+    - kernel
+    - precheck
+    - connectivity
+
+dependencies: []
