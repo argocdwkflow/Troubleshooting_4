@@ -1,0 +1,290 @@
+Parfait. Voici la version prête à push (JSON + zéro combine() long dans les tasks).
+Objectif : passer ansible-lint strict, garder timeout=KO, et produire un sat_precheck final en JSON.
+✅ 1) templates/sat_precheck.json.j2 (à créer)
+roles/satellite_precheck_kernel/templates/sat_precheck.json.j2
+Copy code
+Jinja
+{
+  "capsule": "{{ sat_precheck_capsule_fqdn }}",
+  "rhel_major": "{{ sat_precheck_rhel_major }}",
+  "arch": "{{ sat_precheck_arch }}",
+  "kernel_file": "{{ sat_precheck_kernel_file }}",
+  "url": "{{ sat_precheck_kernel_url }}",
+  "tmp_file": "{{ sat_precheck_tmp_file }}",
+
+  "dns_ahosts": {{ (_dns.stdout | default('')) | to_json }},
+
+  "tcp_method": {{ (sat_precheck_tcp_method | default('none')) | to_json }},
+  "tcp_rc": {{ (sat_precheck_tcp_rc | default('null')) }},
+  "tcp_err": {{ (sat_precheck_tcp_err | default('')) | to_json }},
+  "port_443_ok": {{ (sat_precheck_port_443_ok | default(false)) | lower }},
+
+  "https_method": {{ (sat_precheck_https_method | default('none')) | to_json }},
+  "https_rc": {{ (sat_precheck_https_rc | default('null')) }},
+  "error": {{ (sat_precheck_https_error | default('')) | to_json }},
+  "file_exists": {{ (_st.stat.exists | default(false)) | lower }},
+  "file_size": {{ (_st.stat.size | default(0)) | int }},
+  "download_ok": {{ (sat_precheck_download_ok | default(false)) | lower }},
+
+  "kernel_version": {{ (_cat.stdout | default('') | trim) | to_json }}
+}
+✅ to_json protège les quotes et caractères spéciaux
+✅ Pas de logique complexe, lint-friendly
+✅ 2) tasks/main.yml COMPLET refactorisé (à remplacer)
+roles/satellite_precheck_kernel/tasks/main.yml
+Copy code
+Yaml
+---
+- name: Set RHEL major
+  ansible.builtin.set_fact:
+    sat_precheck_rhel_major: "{{ ansible_distribution_major_version | string }}"
+  changed_when: false
+
+- name: Check supported OS (RHEL 7/8/9/10)
+  ansible.builtin.fail:
+    msg: >-
+      OS non supporté: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      (major={{ sat_precheck_rhel_major }})
+  when:
+    - ansible_distribution != "RedHat"
+    - sat_precheck_rhel_major not in sat_precheck_supported_majors
+
+- name: Build kernel file name
+  ansible.builtin.set_fact:
+    sat_precheck_kernel_file: >-
+      {{ sat_precheck_kernel_file_prefix }}-{{ sat_precheck_rhel_major }}-{{ sat_precheck_arch }}
+  changed_when: false
+
+- name: Build URL and tmp path
+  ansible.builtin.set_fact:
+    sat_precheck_kernel_url: >-
+      https://{{ sat_precheck_capsule_fqdn }}{{ sat_precheck_kernel_base_path }}/{{ sat_precheck_kernel_file }}
+    sat_precheck_tmp_file: >-
+      {{ sat_precheck_tmp_dir }}/{{ sat_precheck_kernel_file }}.{{ inventory_hostname }}.{{ ansible_date_time.epoch }}
+    sat_precheck_result_json: >-
+      {{ sat_precheck_tmp_dir }}/sat_precheck.{{ inventory_hostname }}.{{ ansible_date_time.epoch }}.json
+  changed_when: false
+
+# Defaults for computed facts (no big dict combine)
+- name: Init computed facts
+  ansible.builtin.set_fact:
+    sat_precheck_tcp_method: "none"
+    sat_precheck_tcp_rc: "null"
+    sat_precheck_tcp_err: ""
+    sat_precheck_port_443_ok: false
+    sat_precheck_https_method: "none"
+    sat_precheck_https_rc: "null"
+    sat_precheck_https_error: ""
+    sat_precheck_download_ok: false
+  changed_when: false
+
+- name: Precheck block (dns + tcp443 + https get + proof + read + cleanup)
+  block:
+    # DNS
+    - name: DNS resolution (getent ahosts)
+      ansible.builtin.command: "getent ahosts {{ sat_precheck_capsule_fqdn }}"
+      register: _dns
+      changed_when: false
+      failed_when: false
+
+    # TCP 443: nc -> telnet -> /dev/tcp
+    - name: TCP 443 check with nc if available
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v nc >/dev/null 2>&1 || exit 127
+        nc -vz -w {{ sat_precheck_tcp_timeout }} {{ sat_precheck_capsule_fqdn }} 443
+      register: _tcp_nc
+      changed_when: false
+      failed_when: false
+
+    - name: TCP 443 check with telnet if nc missing
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v telnet >/dev/null 2>&1 || exit 127
+        (echo quit | timeout {{ sat_precheck_tcp_timeout | int + 2 }} telnet {{ sat_precheck_capsule_fqdn }} 443) 2>&1 | tail -n 8
+      register: _tcp_telnet
+      changed_when: false
+      failed_when: false
+      when: _tcp_nc.rc == 127
+
+    - name: TCP 443 check with /dev/tcp fallback if nc+telnet missing
+      ansible.builtin.shell: |
+        set -o pipefail
+        timeout {{ sat_precheck_tcp_timeout }} bash -lc 'echo > /dev/tcp/{{ sat_precheck_capsule_fqdn }}/443'
+      register: _tcp_devtcp
+      changed_when: false
+      failed_when: false
+      when:
+        - _tcp_nc.rc == 127
+        - _tcp_telnet is defined
+        - _tcp_telnet.rc == 127
+
+    # Compute TCP facts using your existing templates (kept)
+    - name: Compute TCP facts (templates)
+      ansible.builtin.set_fact:
+        sat_precheck_tcp_method: "{{ lookup('template', 'tcp_method.j2') | trim }}"
+        sat_precheck_tcp_rc: "{{ lookup('template', 'tcp_rc.j2') | trim }}"
+        sat_precheck_tcp_err: "{{ lookup('template', 'tcp_err.j2') | trim }}"
+        sat_precheck_tcp_ok_str: "{{ lookup('template', 'tcp_ok.j2') | trim }}"
+      changed_when: false
+
+    - name: Save TCP results (simple facts)
+      ansible.builtin.set_fact:
+        sat_precheck_port_443_ok: "{{ sat_precheck_tcp_ok_str == 'true' }}"
+      changed_when: false
+
+    # HTTPS GET only if TCP ok
+    - name: HTTPS GET via wget if available (download to /tmp)
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v wget >/dev/null 2>&1 || exit 127
+        EXTRA=""
+        if [ "{{ sat_precheck_validate_certs | bool }}" = "False" ] || [ "{{ sat_precheck_validate_certs | bool }}" = "false" ]; then
+          EXTRA="--no-check-certificate"
+        fi
+        wget -O "{{ sat_precheck_tmp_file }}" -S --timeout={{ sat_precheck_https_timeout }} --tries=1 $EXTRA "{{ sat_precheck_kernel_url }}"
+      register: _https_wget
+      changed_when: false
+      failed_when: false
+      when: sat_precheck_port_443_ok | bool
+
+    - name: HTTPS GET via curl if wget missing (download to /tmp)
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v curl >/dev/null 2>&1 || exit 127
+        EXTRA=""
+        if [ "{{ sat_precheck_validate_certs | bool }}" = "False" ] || [ "{{ sat_precheck_validate_certs | bool }}" = "false" ]; then
+          EXTRA="-k"
+        fi
+        curl $EXTRA -sS --connect-timeout {{ sat_precheck_tcp_timeout }} --max-time {{ sat_precheck_https_timeout }} \
+          -o "{{ sat_precheck_tmp_file }}" "{{ sat_precheck_kernel_url }}"
+      register: _https_curl
+      changed_when: false
+      failed_when: false
+      when:
+        - sat_precheck_port_443_ok | bool
+        - _https_wget is not defined or _https_wget.rc == 127
+
+    - name: Stat downloaded file (proof)
+      ansible.builtin.stat:
+        path: "{{ sat_precheck_tmp_file }}"
+      register: _st
+      changed_when: false
+
+    # Compute HTTPS facts using your existing templates (kept)
+    - name: Compute HTTPS facts (templates)
+      ansible.builtin.set_fact:
+        sat_precheck_https_method: "{{ lookup('template', 'https_method.j2') | trim }}"
+        sat_precheck_https_rc: "{{ lookup('template', 'https_rc.j2') | trim }}"
+        sat_precheck_https_error: "{{ lookup('template', 'https_error.j2') | trim }}"
+        sat_precheck_download_ok_str: "{{ lookup('template', 'download_ok.j2') | trim }}"
+      changed_when: false
+
+    - name: Save HTTPS results (simple facts)
+      ansible.builtin.set_fact:
+        sat_precheck_download_ok: "{{ sat_precheck_download_ok_str == 'true' }}"
+      changed_when: false
+
+    - name: Read downloaded file content (kernel_version)
+      ansible.builtin.command: "cat {{ sat_precheck_tmp_file }}"
+      register: _cat
+      changed_when: false
+      failed_when: false
+      when: sat_precheck_download_ok | bool
+
+    # Render final JSON result (single point of truth)
+    - name: Render sat_precheck JSON (template)
+      ansible.builtin.template:
+        src: sat_precheck.json.j2
+        dest: "{{ sat_precheck_result_json }}"
+        mode: '0600'
+      changed_when: false
+
+    - name: Load sat_precheck JSON
+      ansible.builtin.slurp:
+        src: "{{ sat_precheck_result_json }}"
+      register: _precheck_json
+      changed_when: false
+
+    - name: Set sat_precheck fact from JSON
+      ansible.builtin.set_fact:
+        sat_precheck: "{{ _precheck_json.content | b64decode | from_json }}"
+      changed_when: false
+
+    - name: Fail hard if requested
+      ansible.builtin.fail:
+        msg: >-
+          Precheck KO:
+          dns={{ sat_precheck.dns_ahosts }},
+          tcp_method={{ sat_precheck.tcp_method }},
+          443_ok={{ sat_precheck.port_443_ok }},
+          https_method={{ sat_precheck.https_method }},
+          download_ok={{ sat_precheck.download_ok }},
+          file_exists={{ sat_precheck.file_exists }},
+          size={{ sat_precheck.file_size }},
+          err={{ sat_precheck.error }}
+      when:
+        - sat_precheck_fail_hard | bool
+        - (not sat_precheck.port_443_ok) or (not sat_precheck.download_ok)
+
+  rescue:
+    - name: Build minimal KO result on exception
+      ansible.builtin.set_fact:
+        sat_precheck:
+          capsule: "{{ sat_precheck_capsule_fqdn }}"
+          rhel_major: "{{ sat_precheck_rhel_major }}"
+          arch: "{{ sat_precheck_arch }}"
+          kernel_file: "{{ sat_precheck_kernel_file }}"
+          url: "{{ sat_precheck_kernel_url }}"
+          tmp_file: "{{ sat_precheck_tmp_file }}"
+          dns_ahosts: ""
+          tcp_method: "none"
+          tcp_rc: null
+          tcp_err: ""
+          port_443_ok: false
+          https_method: "none"
+          https_rc: null
+          error: "Unexpected error during precheck block"
+          file_exists: false
+          file_size: 0
+          download_ok: false
+          kernel_version: ""
+      changed_when: false
+
+    - name: Fail hard on exception if requested
+      ansible.builtin.fail:
+        msg: "Precheck KO (exception): {{ sat_precheck.error }}"
+      when: sat_precheck_fail_hard | bool
+
+  always:
+    - name: Cleanup downloaded kernel_version file
+      ansible.builtin.file:
+        path: "{{ sat_precheck_tmp_file }}"
+        state: absent
+      changed_when: false
+
+    - name: Cleanup rendered sat_precheck JSON
+      ansible.builtin.file:
+        path: "{{ sat_precheck_result_json }}"
+        state: absent
+      changed_when: false
+
+- name: Show final precheck result
+  ansible.builtin.debug:
+    var: sat_precheck
+✅ Notes importantes (alignées avec ton objectif)
+Timeout = KO
+nc -w, timeout telnet, timeout /dev/tcp, wget --timeout, curl --max-time
+➡️ si timeout → rc != 0 / fichier vide → download_ok=false, port_443_ok=false.
+Anti faux positifs
+le download est validé uniquement si stat.exists==true ET stat.size>0 (via download_ok.j2).
+ansible-lint
+plus de gros combine() longs
+plus de jinja inline “dirty”
+les rendus dict/JSON sont dans un template unique
+✅ À garder : tes templates existants
+Tu as déjà dans templates/ :
+tcp_method.j2, tcp_rc.j2, tcp_err.j2, tcp_ok.j2
+https_method.j2, https_rc.j2, https_error.j2, download_ok.j2
+➡️ Ils restent inchangés (c’est parfait).
+Si tu veux, je peux aussi te donner un .ansible-lint minimal “AAP strict compatible” sans assouplir la sécurité, juste pour éviter les règles inutiles (ex: yaml[line-length] si votre org ne veut pas).
