@@ -1,0 +1,385 @@
+Voici un package complet du rôle satellite_precheck_kernel avec templates Jinja2 + un tasks/main.yml propre, lisible et sans Jinja complexe dans les tasks. Tu peux copier-coller tel quel.
+✅ Arborescence
+Copy code
+
+roles/satellite_precheck_kernel/
+├── defaults/main.yml
+├── meta/main.yml
+├── tasks/main.yml
+├── templates/
+│   ├── tcp_method.j2
+│   ├── tcp_rc.j2
+│   ├── tcp_err.j2
+│   ├── tcp_ok.j2
+│   ├── https_method.j2
+│   ├── https_rc.j2
+│   ├── https_error.j2
+│   └── download_ok.j2
+└── README.md
+1) defaults/main.yml
+Copy code
+Yaml
+---
+sat_precheck_capsule_fqdn: "capsule-bp2i-prod.fr.net.intra"
+sat_precheck_kernel_base_path: "/pub/kernel_versions"
+sat_precheck_kernel_file_prefix: "kernel_version_BP2I_lfe-prod_ccv-rhel"
+sat_precheck_arch: "{{ ansible_architecture | default('x86_64') }}"
+
+sat_precheck_validate_certs: false
+sat_precheck_tcp_timeout: 3
+sat_precheck_https_timeout: 5
+sat_precheck_tmp_dir: "/tmp"
+
+sat_precheck_supported_majors: ["7", "8", "9", "10"]
+sat_precheck_fail_hard: false
+2) meta/main.yml (ansible-lint OK)
+Copy code
+Yaml
+---
+galaxy_info:
+  role_name: satellite_precheck_kernel
+  author: BP2I Linux Team
+  description: Precheck capsule access (TCP 443) + download kernel_version via real HTTPS GET
+  company: BP2I
+  license: MIT
+  min_ansible_version: "2.9"
+  platforms:
+    - name: EL
+      versions:
+        - "7"
+        - "8"
+        - "9"
+        - "10"
+
+dependencies: []
+3) Templates Jinja2
+templates/tcp_method.j2
+Copy code
+Jinja
+{% if _tcp_nc is defined and _tcp_nc.rc != 127 %}
+nc
+{% elif _tcp_telnet is defined and _tcp_telnet.rc != 127 %}
+telnet
+{% else %}
+devtcp
+{% endif %}
+templates/tcp_rc.j2
+Copy code
+Jinja
+{% if _tcp_nc is defined and _tcp_nc.rc != 127 %}
+{{ _tcp_nc.rc }}
+{% elif _tcp_telnet is defined and _tcp_telnet.rc != 127 %}
+{{ _tcp_telnet.rc }}
+{% else %}
+{{ _tcp_devtcp.rc | default(1) }}
+{% endif %}
+templates/tcp_err.j2
+Copy code
+Jinja
+{% if _tcp_nc is defined and _tcp_nc.rc != 127 %}
+{{ _tcp_nc.stderr | default('') }}
+{% elif _tcp_telnet is defined and _tcp_telnet.rc != 127 %}
+{{ _tcp_telnet.stdout | default('') }}
+{% else %}
+{{ _tcp_devtcp.stderr | default('') }}
+{% endif %}
+templates/tcp_ok.j2
+Copy code
+Jinja
+{% if _tcp_nc is defined and _tcp_nc.rc != 127 %}
+{{ 'true' if _tcp_nc.rc == 0 else 'false' }}
+{% elif _tcp_telnet is defined and _tcp_telnet.rc != 127 %}
+{% set out = _tcp_telnet.stdout | default('') %}
+{{ 'true' if ('Connected to' in out or 'Connected' in out) else 'false' }}
+{% else %}
+{{ 'true' if (_tcp_devtcp.rc | default(1)) == 0 else 'false' }}
+{% endif %}
+templates/https_method.j2
+Copy code
+Jinja
+{% if _https_wget is defined and _https_wget.rc != 127 %}
+wget
+{% elif _https_curl is defined and _https_curl.rc != 127 %}
+curl
+{% else %}
+none
+{% endif %}
+templates/https_rc.j2
+Copy code
+Jinja
+{% if _https_wget is defined and _https_wget.rc != 127 %}
+{{ _https_wget.rc }}
+{% elif _https_curl is defined and _https_curl.rc != 127 %}
+{{ _https_curl.rc }}
+{% else %}
+127
+{% endif %}
+templates/https_error.j2
+Copy code
+Jinja
+{% if _https_wget is defined and _https_wget.rc not in [0,127] %}
+{{ _https_wget.stderr | default(_https_wget.msg | default('')) }}
+{% elif _https_curl is defined and _https_curl.rc not in [0,127] %}
+{{ _https_curl.stderr | default(_https_curl.msg | default('')) }}
+{% else %}
+{% endif %}
+templates/download_ok.j2
+Copy code
+Jinja
+{% set exists = _st.stat.exists | default(false) %}
+{% set size = _st.stat.size | default(0) | int %}
+{{ 'true' if (exists and size > 0) else 'false' }}
+4) ✅ tasks/main.yml (utilise les templates)
+Copy code
+Yaml
+---
+- name: Set RHEL major
+  ansible.builtin.set_fact:
+    sat_precheck_rhel_major: "{{ ansible_distribution_major_version | string }}"
+  changed_when: false
+
+- name: Check supported OS (RHEL 7/8/9/10)
+  ansible.builtin.fail:
+    msg: >-
+      OS non supporté: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      (major={{ sat_precheck_rhel_major }})
+  when:
+    - ansible_distribution != "RedHat"
+    - sat_precheck_rhel_major not in sat_precheck_supported_majors
+
+- name: Build kernel file name
+  ansible.builtin.set_fact:
+    sat_precheck_kernel_file: "{{ sat_precheck_kernel_file_prefix }}-{{ sat_precheck_rhel_major }}-{{ sat_precheck_arch }}"
+  changed_when: false
+
+- name: Build URL and tmp path
+  ansible.builtin.set_fact:
+    sat_precheck_kernel_url: "https://{{ sat_precheck_capsule_fqdn }}{{ sat_precheck_kernel_base_path }}/{{ sat_precheck_kernel_file }}"
+    sat_precheck_tmp_file: "{{ sat_precheck_tmp_dir }}/{{ sat_precheck_kernel_file }}.{{ inventory_hostname }}.{{ ansible_date_time.epoch }}"
+  changed_when: false
+
+- name: Init result
+  ansible.builtin.set_fact:
+    sat_precheck:
+      capsule: "{{ sat_precheck_capsule_fqdn }}"
+      rhel_major: "{{ sat_precheck_rhel_major }}"
+      arch: "{{ sat_precheck_arch }}"
+      kernel_file: "{{ sat_precheck_kernel_file }}"
+      url: "{{ sat_precheck_kernel_url }}"
+      tmp_file: "{{ sat_precheck_tmp_file }}"
+      dns_ahosts: ""
+      tcp_method: "none"
+      port_443_ok: false
+      tcp_rc: null
+      tcp_err: ""
+      https_method: "none"
+      https_rc: null
+      download_ok: false
+      file_exists: false
+      file_size: 0
+      kernel_version: ""
+      error: ""
+  changed_when: false
+
+- name: Precheck block (dns + tcp443 + https get + proof + read + cleanup)
+  block:
+    - name: DNS resolution (getent ahosts)
+      ansible.builtin.command: "getent ahosts {{ sat_precheck_capsule_fqdn }}"
+      register: _dns
+      changed_when: false
+      failed_when: false
+
+    - name: Save DNS output
+      ansible.builtin.set_fact:
+        sat_precheck: "{{ sat_precheck | combine({'dns_ahosts': (_dns.stdout | default(''))}) }}"
+      changed_when: false
+
+    # TCP 443: nc -> telnet -> devtcp
+    - name: TCP 443 check with nc if available
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v nc >/dev/null 2>&1 || exit 127
+        nc -vz -w {{ sat_precheck_tcp_timeout }} {{ sat_precheck_capsule_fqdn }} 443
+      register: _tcp_nc
+      changed_when: false
+      failed_when: false
+
+    - name: TCP 443 check with telnet if nc missing
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v telnet >/dev/null 2>&1 || exit 127
+        (echo quit | timeout {{ sat_precheck_tcp_timeout | int + 2 }} telnet {{ sat_precheck_capsule_fqdn }} 443) 2>&1 | tail -n 8
+      register: _tcp_telnet
+      changed_when: false
+      failed_when: false
+      when: _tcp_nc.rc == 127
+
+    - name: TCP 443 check with /dev/tcp fallback if nc+telnet missing
+      ansible.builtin.shell: |
+        set -o pipefail
+        timeout {{ sat_precheck_tcp_timeout }} bash -lc 'echo > /dev/tcp/{{ sat_precheck_capsule_fqdn }}/443'
+      register: _tcp_devtcp
+      changed_when: false
+      failed_when: false
+      when:
+        - _tcp_nc.rc == 127
+        - _tcp_telnet.rc is defined
+        - _tcp_telnet.rc == 127
+
+    - name: Compute TCP facts (templates)
+      ansible.builtin.set_fact:
+        sat_precheck_tcp_method: "{{ lookup('template', 'tcp_method.j2') | trim }}"
+        sat_precheck_tcp_rc: "{{ lookup('template', 'tcp_rc.j2') | trim }}"
+        sat_precheck_tcp_err: "{{ lookup('template', 'tcp_err.j2') | trim }}"
+        sat_precheck_tcp_ok_str: "{{ lookup('template', 'tcp_ok.j2') | trim }}"
+      changed_when: false
+
+    - name: Save TCP results
+      ansible.builtin.set_fact:
+        sat_precheck: "{{ sat_precheck | combine({
+          'tcp_method': sat_precheck_tcp_method,
+          'tcp_rc': sat_precheck_tcp_rc,
+          'tcp_err': sat_precheck_tcp_err,
+          'port_443_ok': (sat_precheck_tcp_ok_str == 'true')
+        }) }}"
+      changed_when: false
+
+    # HTTPS GET only if TCP ok
+    - name: HTTPS GET via wget if available (download to /tmp)
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v wget >/dev/null 2>&1 || exit 127
+        EXTRA=""
+        if [ "{{ sat_precheck_validate_certs | bool }}" = "False" ] || [ "{{ sat_precheck_validate_certs | bool }}" = "false" ]; then
+          EXTRA="--no-check-certificate"
+        fi
+        wget -O "{{ sat_precheck_tmp_file }}" -S --timeout={{ sat_precheck_https_timeout }} --tries=1 $EXTRA "{{ sat_precheck_kernel_url }}"
+      register: _https_wget
+      changed_when: false
+      failed_when: false
+      when: sat_precheck.port_443_ok | bool
+
+    - name: HTTPS GET via curl if wget missing (download to /tmp)
+      ansible.builtin.shell: |
+        set -o pipefail
+        command -v curl >/dev/null 2>&1 || exit 127
+        EXTRA=""
+        if [ "{{ sat_precheck_validate_certs | bool }}" = "False" ] || [ "{{ sat_precheck_validate_certs | bool }}" = "false" ]; then
+          EXTRA="-k"
+        fi
+        curl $EXTRA -sS --connect-timeout {{ sat_precheck_tcp_timeout }} --max-time {{ sat_precheck_https_timeout }} \
+          -o "{{ sat_precheck_tmp_file }}" "{{ sat_precheck_kernel_url }}"
+      register: _https_curl
+      changed_when: false
+      failed_when: false
+      when:
+        - sat_precheck.port_443_ok | bool
+        - _https_wget is not defined or _https_wget.rc == 127
+
+    - name: Stat downloaded file (proof)
+      ansible.builtin.stat:
+        path: "{{ sat_precheck_tmp_file }}"
+      register: _st
+      changed_when: false
+
+    - name: Compute HTTPS facts (templates)
+      ansible.builtin.set_fact:
+        sat_precheck_https_method: "{{ lookup('template', 'https_method.j2') | trim }}"
+        sat_precheck_https_rc: "{{ lookup('template', 'https_rc.j2') | trim }}"
+        sat_precheck_https_error: "{{ lookup('template', 'https_error.j2') | trim }}"
+        sat_precheck_download_ok_str: "{{ lookup('template', 'download_ok.j2') | trim }}"
+      changed_when: false
+
+    - name: Save HTTPS results
+      ansible.builtin.set_fact:
+        sat_precheck: "{{ sat_precheck | combine({
+          'https_method': sat_precheck_https_method,
+          'https_rc': sat_precheck_https_rc,
+          'download_ok': (sat_precheck_download_ok_str == 'true'),
+          'https_ok': (sat_precheck_download_ok_str == 'true'),
+          'file_exists': (_st.stat.exists | default(false)),
+          'file_size': (_st.stat.size | default(0)),
+          'error': sat_precheck_https_error
+        }) }}"
+      changed_when: false
+
+    - name: Read downloaded file content
+      ansible.builtin.command: "cat {{ sat_precheck_tmp_file }}"
+      register: _cat
+      changed_when: false
+      when: sat_precheck.download_ok | bool
+
+    - name: Save kernel_version content
+      ansible.builtin.set_fact:
+        sat_precheck: "{{ sat_precheck | combine({'kernel_version': (_cat.stdout | default('') | trim)}) }}"
+      changed_when: false
+      when: sat_precheck.download_ok | bool
+
+    - name: Fail hard if requested
+      ansible.builtin.fail:
+        msg: >-
+          Precheck KO:
+          dns={{ sat_precheck.dns_ahosts }},
+          tcp_method={{ sat_precheck.tcp_method }},
+          443_ok={{ sat_precheck.port_443_ok }},
+          https_method={{ sat_precheck.https_method }},
+          download_ok={{ sat_precheck.download_ok }},
+          file_exists={{ sat_precheck.file_exists }},
+          size={{ sat_precheck.file_size }},
+          err={{ sat_precheck.error }}
+      when:
+        - sat_precheck_fail_hard | bool
+        - (not sat_precheck.port_443_ok) or (not sat_precheck.download_ok)
+
+  rescue:
+    - name: Mark failure in result (exception)
+      ansible.builtin.set_fact:
+        sat_precheck: "{{ sat_precheck | combine({
+          'port_443_ok': false,
+          'download_ok': false,
+          'https_ok': false,
+          'error': 'Unexpected error during precheck block'
+        }) }}"
+      changed_when: false
+
+    - name: Fail hard on exception if requested
+      ansible.builtin.fail:
+        msg: "Precheck KO (exception): {{ sat_precheck.error }}"
+      when: sat_precheck_fail_hard | bool
+
+  always:
+    - name: Cleanup /tmp file
+      ansible.builtin.file:
+        path: "{{ sat_precheck_tmp_file }}"
+        state: absent
+      changed_when: false
+
+- name: Show final precheck result
+  ansible.builtin.debug:
+    var: sat_precheck
+5) README.md (optionnel mais utile)
+Copy code
+Md
+# satellite_precheck_kernel
+
+Precheck réseau Satellite/Capsule:
+- DNS: getent ahosts
+- TCP 443 réel: nc -> telnet -> /dev/tcp fallback
+- HTTPS GET réel: wget -> curl fallback
+- Download /tmp + preuve stat + lecture du contenu
+- Cleanup /tmp
+
+Output: fact `sat_precheck`.
+✅ Comment tester rapidement dans ton playbook projet
+Copy code
+Yaml
+---
+- hosts: all
+  gather_facts: true
+  roles:
+    - role: satellite_precheck_kernel
+      vars:
+        sat_precheck_capsule_fqdn: "capsule-bp2i-prod.fr.net.intra"
+        sat_precheck_validate_certs: false
+        sat_precheck_fail_hard: false
+Si ton pipeline ansible-lint continue à bloquer sur line-length, je te donne un .ansible-lint propre (profil min) ou je découpe encore certaines lignes (sans casser la lisibilité).
