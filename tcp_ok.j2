@@ -1,0 +1,31 @@
+{# Returns 'true' if ANY TCP 443 check is OK (nc OR telnet OR /dev/tcp). #}
+
+{# Helper booleans #}
+{% set nc_defined = (_tcp_nc is defined) %}
+{% set telnet_defined = (_tcp_telnet is defined) %}
+{% set devtcp_defined = (_tcp_devtcp is defined) %}
+
+{# Normalize rc (can be "0" as string) -> int #}
+{% set nc_rc = (_tcp_nc.rc | default(1) | int) if nc_defined else 1 %}
+{% set telnet_rc = (_tcp_telnet.rc | default(1) | int) if telnet_defined else 1 %}
+{% set devtcp_rc = (_tcp_devtcp.rc | default(1) | int) if devtcp_defined else 1 %}
+
+{% set nc_rc_ok = (nc_defined and (nc_rc == 0)) %}
+{% set telnet_rc_ok = (telnet_defined and (telnet_rc == 0)) %}
+{% set devtcp_rc_ok = (devtcp_defined and (devtcp_rc == 0)) %}
+
+{# Normalize outputs -> lower for matching #}
+{% set nc_out = (((_tcp_nc.stdout | default('')) ~ ' ' ~ (_tcp_nc.stderr | default(''))) | lower) if nc_defined else '' %}
+{% set telnet_out = (((_tcp_telnet.stdout | default('')) ~ ' ' ~ (_tcp_telnet.stderr | default(''))) | lower) if telnet_defined else '' %}
+{% set devtcp_out = (((_tcp_devtcp.stdout | default('')) ~ ' ' ~ (_tcp_devtcp.stderr | default(''))) | lower) if devtcp_defined else '' %}
+
+{# Success keywords (Ncat prints "connected to" in stderr often) #}
+{% set nc_msg_ok = (nc_defined and (('connected to' in nc_out) or ('succeeded' in nc_out) or ('open' in nc_out))) %}
+{% set telnet_msg_ok = (telnet_defined and (('escape character' in telnet_out) or ('connected to' in telnet_out) or ('connection to' in telnet_out))) %}
+{% set devtcp_msg_ok = (devtcp_defined and (('succeeded' in devtcp_out) or ('open' in devtcp_out) or ('connected' in devtcp_out))) %}
+
+{% if nc_rc_ok or telnet_rc_ok or devtcp_rc_ok or nc_msg_ok or telnet_msg_ok or devtcp_msg_ok %}
+true
+{% else %}
+false
+{% endif %}
