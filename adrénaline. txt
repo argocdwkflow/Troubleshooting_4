@@ -1,0 +1,3 @@
+Hubert’s method: move the entire rootvg back and forth, resize partitions, recreate PVs, reinstall half the system… 🔥
+Our method: add one small disk, copy /boot, reinstall GRUB, reboot, done. ☕
+Same result. Much less adrenaline
