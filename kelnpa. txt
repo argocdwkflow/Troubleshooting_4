@@ -1,0 +1,18 @@
+Voici un message clair, pro et prêt à envoyer sur Teams, ton bien “Linux N3 en prod” 💻👇
+⚠️ Important – RHEL Kernel Patching & Minor Version Impact (Satellite)
+Hello,
+Please note that for RHEL servers currently registered in Red Hat Satellite with minor versions RHEL 8.8 and RHEL 9.4, launching the kernel patching operation may trigger an upgrade to the next minor distribution (8.10 and 9.6 respectively).
+This behavior is due to:
+The current Satellite configuration (Activation Keys / Content Views),
+And the kernel patching script, which pulls the latest kernel available under the associated AK.
+As a result, the kernel patch implicitly installs the kernel from the next minor release, leading to an OS minor version migration:
+8.8 → 8.10
+9.4 → 9.6
+👉 Action required:
+Before launching the patch, please inform the requester/client of this behavior and confirm that there is no application or functional impact related to the minor version upgrade.
+❗ If the client does not approve this type of operation, we will need to define an alternative solution to apply the kernel patch without upgrading to the next RHEL minor version (e.g. Satellite configuration adjustment, dedicated Content View, release version lock, etc.).
+Let me know if you need support to assess the impact or propose a safe workaround.
+Si tu veux, je peux aussi te faire :
+une version plus courte / plus directe,
+une version très formelle (management / client),
+ou une version ultra-technique N3 avec mots-clés Satellite (AK, CV, release-lock).
