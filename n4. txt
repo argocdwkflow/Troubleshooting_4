@@ -1,0 +1,81 @@
+Oui, c’est possible, mais en safe prod il faut le faire de façon contrôlée :
+Par défaut : si déjà enregistré → on ne touche pas.
+Si tu actives un “force re-register” : alors on fait unregister + clean (+ purge) puis register à nouveau.
+⚠️ Important : --force tout seul ne garantit pas un vrai “reset” côté client (consumer/certs/facts). Le plus fiable est : unregister + clean (+ purge certs/cache) puis register --force.
+✅ Implémentation propre dans ton rôle
+1) Variables
+defaults/main.yml
+Copy code
+Yaml
+rhsm_reregister_if_already_registered: false   # safe prod default
+rhsm_purge_strong_on_reregister: true         # recommandé
+2) Détection “déjà enregistré”
+Copy code
+Yaml
+- name: RHSM | Check if already registered
+  ansible.builtin.command: subscription-manager identity
+  register: rhsm_identity_pre
+  failed_when: false
+  changed_when: false
+3) Décision : doit-on re-register ?
+Copy code
+Yaml
+- name: RHSM | Decide if we must re-register
+  ansible.builtin.set_fact:
+    rhsm_do_reregister: >-
+      {{
+        (rhsm_reregister_if_already_registered | bool)
+        and
+        (rhsm_identity_pre.rc == 0)
+      }}
+4) Si déjà enregistré ET option activée → cleanup + register
+Copy code
+Yaml
+- name: RHSM | Cleanup before re-register (already registered)
+  ansible.builtin.import_tasks: rhsm_cleanup_safe.yml
+  when: rhsm_do_reregister | bool
+  vars:
+    rhsm_purge_strong_on_failure: "{{ rhsm_purge_strong_on_reregister }}"
+    rhsm_remove_uuid_fact_on_failure: true
+5) Register (après cleanup) — une seule commande safe
+Copy code
+Yaml
+- name: RHSM | Register after cleanup
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - register
+      - "--activationkey={{ satellite_register_ak }}"
+      - "--org={{ satellite_register_org }}"
+      - "--force"
+  register: rhsm_register_after_cleanup
+  failed_when: rhsm_register_after_cleanup.rc != 0
+  changed_when: "'The system has been registered' in (rhsm_register_after_cleanup.stdout | default(''))"
+  when: rhsm_do_reregister | bool
+6) Sinon (pas enregistré) → register normal
+Copy code
+Yaml
+- name: RHSM | Register (normal path)
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - register
+      - "--activationkey={{ satellite_register_ak }}"
+      - "--org={{ satellite_register_org }}"
+      - "{{ '--force' if (satellite_register_force | default(false)) else omit }}"
+  register: rhsm_register_normal
+  failed_when: rhsm_register_normal.rc != 0
+  changed_when: "'The system has been registered' in (rhsm_register_normal.stdout | default(''))"
+  when:
+    - rhsm_identity_pre.rc != 0
+    - not (rhsm_do_reregister | bool)
+🧠 Note importante (prod)
+Re-register va :
+créer un nouveau consumer côté Satellite
+parfois laisser un ancien content-host “stale” côté Satellite (selon vos settings)
+👉 Si vous voulez faire “clean complet” côté Satellite aussi, il faut ajouter une étape hammer (sur le control node) pour supprimer l’ancien content-host avant de register.
+Si tu me confirmes juste le comportement voulu :
+Re-register uniquement si rhsm_reregister_if_already_registered=true ✅
+ou
+Re-register toujours quand satellite_register_force=true (plus agressif)
+…je te donne le patch exact dans ton main.yml avec la même logique de variables que tu utilises déjà.
