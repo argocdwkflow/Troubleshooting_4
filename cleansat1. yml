@@ -1,0 +1,198 @@
+---
+# roles/satellite_register/tasks/main.yml
+# SAFE PROD (NO HAMMER): no shell/jinja inline for register, no uuidgen, local cleanup only when force=true and host already registered.
+
+- name: "Fail if we do not know the env"
+  ansible.builtin.fail:
+    msg: "The env {{ satellite_register_env }} is unknown, valid envs are {{ satellite_register_env_mapping.keys() }}"
+  when: satellite_register_env not in satellite_register_env_mapping.keys()
+
+- name: "Fail if minor version is not set and doesn't match latest version"
+  ansible.builtin.fail:
+    msg: >-
+      This host is not running latest OS minor version (current={{ ansible_distribution_version }},
+      latest={{ satellite_latest_minor[satellite_register_major_version|string] }}).
+      Set satellite_register_minor_version to keep a specific minor OR disable enforce via
+      satellite_register_enforce_latest_minor=false.
+  when:
+    - satellite_register_enforce_latest_minor | default(false) | bool
+    - (satellite_register_minor_version is not defined) or (satellite_register_minor_version | length == 0)
+    - ansible_distribution_version is version(satellite_latest_minor[satellite_register_major_version|string], '!=')
+
+- name: "Define satellite capsule based on environment if not supplied"
+  ansible.builtin.set_fact:
+    satellite_register_capsule: "{{ satellite_register_capsules[satellite_register_env_mapping[satellite_register_env]] }}"
+  when: satellite_register_capsule is not defined
+
+# --------------------------------------------------------------------
+# Connectivity check (HTTPS 443) to capsule VIP
+# --------------------------------------------------------------------
+- name: "Derive satellite host to probe Capsule VIP"
+  ansible.builtin.set_fact:
+    satellite_probe_host: "{{ satellite_register_capsule }}"
+
+- name: "Check HTTPS (443) reachability to {{ satellite_probe_host }}"
+  ansible.builtin.wait_for:
+    host: "{{ satellite_probe_host }}"
+    port: 443
+    state: started
+    timeout: 5
+  register: port443
+  ignore_errors: true
+
+- name: "Abort hard fail when 443 is closed"
+  ansible.builtin.fail:
+    msg: "Port 443 is closed/unreachable on {{ satellite_probe_host }} - aborting operations for this host."
+  when: port443 is failed or (port443.failed | default(false))
+
+# --------------------------------------------------------------------
+# Build activation key if not provided
+# --------------------------------------------------------------------
+- name: "Define activation key based on distribution and environment if not supplied"
+  ansible.builtin.set_fact:
+    satellite_register_ak: >-
+      {% if (satellite_register_minor_version | default('') | length) > 0 %}
+      RHEL{{ satellite_register_major_version }}-{{ satellite_register_minor_version }}-{{ satellite_register_arch }}-{{ satellite_register_env_mapping[satellite_register_env] }}
+      {% else %}
+      RHEL{{ satellite_register_major_version }}-{{ satellite_register_arch }}-{{ satellite_register_env_mapping[satellite_register_env] }}
+      {% endif %}
+  when: satellite_register_ak is not defined
+
+# --------------------------------------------------------------------
+# Install CA cert from Capsule
+# --------------------------------------------------------------------
+- name: "Make sure ca folder exists"
+  ansible.builtin.file:
+    path: "/etc/rhsm/ca"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "Download certificates from capsule server"
+  ansible.builtin.get_url:
+    url: "https://{{ satellite_register_capsule }}/pub/katello-server-ca.crt"
+    dest: "/etc/rhsm/ca/katello-server-ca.pem"
+    validate_certs: "{{ (not (satellite_register_insecure | default(false) | bool)) }}"
+    mode: "0644"
+
+- name: "Install Satellite CA certificate in system trust anchors"
+  ansible.builtin.copy:
+    remote_src: true
+    src: "/etc/rhsm/ca/katello-server-ca.pem"
+    dest: "/etc/pki/ca-trust/source/anchors/katello-server-ca.pem"
+    owner: root
+    group: root
+    mode: "0644"
+  register: ca_installed
+
+- name: "Update system CA trust store"
+  ansible.builtin.command: update-ca-trust
+  when: ca_installed.changed
+  changed_when: true
+
+# --------------------------------------------------------------------
+# Configure subscription-manager to use Capsule (no shell)
+# --------------------------------------------------------------------
+- name: "Configure subscription-manager (serverurl/baseurl)"
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - "--rhsm.baseurl=https://{{ satellite_register_capsule }}/pulp/content"
+      - "--rhsm.repo_ca_cert=/etc/rhsm/ca/katello-server-ca.pem"
+      - "--server.hostname={{ satellite_register_capsule }}"
+  register: sm_config
+  changed_when: false
+  failed_when: false
+
+# --------------------------------------------------------------------
+# SAFE PROD registration (NO HAMMER)
+# - If already registered and force=true => local cleanup + re-register --force
+# - If not registered => normal register
+# --------------------------------------------------------------------
+- name: "RHSM | Check if already registered"
+  ansible.builtin.command: subscription-manager identity
+  register: rhsm_identity_pre
+  failed_when: false
+  changed_when: false
+
+- name: "Decide if re-register is required (force + already registered)"
+  ansible.builtin.set_fact:
+    rhsm_do_reregister: "{{ (satellite_register_force | default(false)) | bool and (rhsm_identity_pre.rc == 0) }}"
+
+- name: "RHSM | Cleanup before re-register (local only)"
+  when: rhsm_do_reregister | bool
+  block:
+    - name: "RHSM | Unregister"
+      ansible.builtin.command: subscription-manager unregister
+      failed_when: false
+      changed_when: false
+
+    - name: "RHSM | Clean"
+      ansible.builtin.command: subscription-manager clean
+      failed_when: false
+      changed_when: true
+
+    - name: "RHSM | Remove legacy uuid.facts (avoid clone collisions)"
+      ansible.builtin.file:
+        path: /etc/rhsm/facts/uuid.facts
+        state: absent
+      failed_when: false
+
+    - name: "RHSM | Strong purge consumer/entitlement/caches"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/pki/consumer
+        - /etc/pki/entitlement
+        - /var/lib/rhsm
+        - /var/cache/rhsm
+      failed_when: false
+
+# Re-register path (force)
+- name: "RHSM | Register (after cleanup, force)"
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - register
+      - "--activationkey={{ satellite_register_ak }}"
+      - "--org={{ satellite_register_org }}"
+      - --force
+  register: rhsm_register_after_cleanup
+  failed_when: rhsm_register_after_cleanup.rc != 0
+  changed_when: "'The system has been registered' in (rhsm_register_after_cleanup.stdout | default(''))"
+  when: rhsm_do_reregister | bool
+
+# Normal register path (not registered)
+- name: "RHSM | Register (normal path)"
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - register
+      - "--activationkey={{ satellite_register_ak }}"
+      - "--org={{ satellite_register_org }}"
+      - "{{ '--force' if (satellite_register_force | default(false)) else omit }}"
+  register: rhsm_register_normal
+  failed_when: rhsm_register_normal.rc != 0
+  changed_when: "'The system has been registered' in (rhsm_register_normal.stdout | default(''))"
+  when:
+    - rhsm_identity_pre.rc != 0
+    - not (rhsm_do_reregister | bool)
+
+- name: "RHSM | Final identity check"
+  ansible.builtin.command: subscription-manager identity
+  register: rhsm_identity_final
+  failed_when: rhsm_identity_final.rc != 0
+  changed_when: false
+
+# --------------------------------------------------------------------
+# (Optional) Enable rhsmcertd
+# --------------------------------------------------------------------
+- name: "Enable rhsmcertd service to periodically update entitlement certificates"
+  ansible.builtin.service:
+    name: rhsmcertd
+    enabled: true
+    state: started
+  failed_when: false
