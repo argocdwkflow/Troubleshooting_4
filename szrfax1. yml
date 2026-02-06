@@ -1,0 +1,57 @@
+Oui, ton intuition est bonne : ce n’est pas “l’antislash”, c’est surtout ton bloc YAML |> qui génère une chaîne multi-ligne avec guillemets + retour ligne → au final tu te retrouves avec une AK qui contient un espace / newline (souvent à la fin), donc Satellite ne la retrouve pas.
+Sur ta capture, tu construis satellite_register_ak comme ça :
+Copy code
+Yaml
+satellite_register_ak: |>
+  {% if ... %}
+  "RHEL{{ ... }}-{{ ... }}-{{ ... }}-{{ ... }}"
+  {% else %}
+  "RHEL{{ ... }}-{{ ... }}-{{ ... }}"
+  {% endif %}
+Pourquoi ça casse
+Les guillemets " font partie de la valeur.
+Le bloc |> (ou |) + indentation peut introduire un newline.
+Résultat : l’AK envoyée peut devenir : RHEL9-x86_64-PROD␠ ou RHEL9-x86_64-PROD\n → 404.
+✅ Fix propre (recommandé) : supprimer guillemets + supprimer multi-ligne + trim
+Remplace ton set_fact par ça (copier/coller) :
+Copy code
+Yaml
+- name: "Define activation key based on distribution and environment if not supplied"
+  ansible.builtin.set_fact:
+    satellite_register_ak: >-
+      {{
+        (
+          (satellite_register_minor_version | default('') | length > 0)
+          | ternary(
+              'RHEL' ~ satellite_register_major_version ~ '-' ~ satellite_register_minor_version ~ '-' ~ satellite_register_arch ~ '-' ~ satellite_register_env_mapping[satellite_register_env],
+              'RHEL' ~ satellite_register_major_version ~ '-' ~ satellite_register_arch ~ '-' ~ satellite_register_env_mapping[satellite_register_env]
+            )
+        ) | trim
+      }}
+  when: satellite_register_ak is not defined
+✅ Avantages :
+pas de guillemets dans la valeur
+pas de retour à la ligne
+trim enlève espaces/newlines invisibles
+✅ Fix minimal (si tu veux garder ton bloc actuel)
+Tu gardes ton set_fact mais tu “nettoies” juste après :
+Copy code
+Yaml
+- name: Normalize activation key (remove quotes/whitespace)
+  ansible.builtin.set_fact:
+    satellite_register_ak: "{{ satellite_register_ak | trim | regex_replace('^\"|\"$', '') }}"
+✅ Et sécurise aussi la commande register
+Dans ton argv, force trim :
+Copy code
+Yaml
+- "--activationkey={{ satellite_register_ak | trim }}"
+🔎 Debug 10 secondes (pour confirmer l’espace)
+Ajoute avant le register :
+Copy code
+Yaml
+- debug:
+    msg:
+      - "AK_RAW=[{{ satellite_register_ak }}]"
+      - "AK_TRIM=[{{ satellite_register_ak | trim }}]"
+Si tu vois AK_RAW=[RHEL9-x86_64-PROD ] → bingo.
+Si tu veux, je te propose une version encore plus safe : validation que l’AK existe dans Satellite via hammer avant de lancer subscription-manager register (ça évite d’échouer sur 500 serveurs).
