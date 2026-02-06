@@ -1,0 +1,183 @@
+Voici une implémentation propre : tu crées un fichier tasks/hammer_cleanup.yml (exécuté sur le Satellite via SSH, sans user/password car le ~/.hammer/cli_config.yml est déjà présent), et tu l’appelles uniquement en mode rescue quand on détecte un conflit UUID / “matches other registered hosts”.
+1) Crée roles/satellite_register/tasks/hammer_cleanup.yml
+Copy code
+Yaml
+---
+# Cleanup côté Satellite via hammer (NO user/password, uses ~/.hammer/cli_config.yml on Satellite)
+# Exécuté via SSH depuis AAP => delegate_to: satellite_hammer_host
+
+- name: "SATELLITE | Set host key to delete"
+  ansible.builtin.set_fact:
+    satellite_host_key: "{{ satellite_host_key | default(ansible_fqdn | default(inventory_hostname)) }}"
+
+- name: "SATELLITE | Get content-host id"
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - content-host
+      - list
+      - --organization
+      - "{{ satellite_hammer_org }}"
+      - --search
+      - "name=\"{{ satellite_host_key }}\""
+      - --fields
+      - "Id"
+      - --csv
+  delegate_to: "{{ satellite_hammer_host }}"
+  become: true
+  become_user: root
+  register: hammer_ch_list
+  changed_when: false
+  failed_when: false
+
+- name: "SATELLITE | Extract content-host id"
+  ansible.builtin.set_fact:
+    hammer_content_host_id: >-
+      {{
+        (hammer_ch_list.stdout_lines | default([]))
+        | select('match','^[0-9]+$')
+        | list
+        | first
+        | default('')
+      }}
+
+- name: "SATELLITE | Delete content-host if exists"
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - content-host
+      - delete
+      - --id
+      - "{{ hammer_content_host_id }}"
+  delegate_to: "{{ satellite_hammer_host }}"
+  become: true
+  become_user: root
+  when: hammer_content_host_id | length > 0
+  changed_when: true
+  failed_when: false
+
+# Optionnel mais conseillé : supprimer aussi l'objet Foreman host
+- name: "SATELLITE | Get host id (Foreman)"
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - host
+      - list
+      - --organization
+      - "{{ satellite_hammer_org }}"
+      - --search
+      - "name=\"{{ satellite_host_key }}\""
+      - --fields
+      - "Id"
+      - --csv
+  delegate_to: "{{ satellite_hammer_host }}"
+  become: true
+  become_user: root
+  register: hammer_host_list
+  changed_when: false
+  failed_when: false
+
+- name: "SATELLITE | Extract host id"
+  ansible.builtin.set_fact:
+    hammer_host_id: >-
+      {{
+        (hammer_host_list.stdout_lines | default([]))
+        | select('match','^[0-9]+$')
+        | list
+        | first
+        | default('')
+      }}
+
+- name: "SATELLITE | Delete host if exists"
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - host
+      - delete
+      - --id
+      - "{{ hammer_host_id }}"
+  delegate_to: "{{ satellite_hammer_host }}"
+  become: true
+  become_user: root
+  when: hammer_host_id | length > 0
+  changed_when: true
+  failed_when: false
+Variables requises
+Dans inventory/group_vars :
+Copy code
+Yaml
+satellite_hammer_host: "satellite-core.mondomaine.local"
+satellite_hammer_org: "BP2I"
+# optionnel si besoin d’un nom spécifique
+# satellite_host_key: "srv01.example.com"
+2) Dans tasks/main.yml : bloc register + rescue “UUID conflict”
+L’idée :
+Try register
+Si échec et pattern conflit UUID → rescue :
+hammer cleanup (Satellite)
+cleanup local RHSM
+retry register --force
+Copy code
+Yaml
+- name: "RHSM | Register (try) + rescue on UUID conflict"
+  block:
+    - name: "RHSM | Register (1st try)"
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - register
+          - "--activationkey={{ satellite_register_ak }}"
+          - "--org={{ satellite_register_org }}"
+      register: rhsm_try
+      failed_when: rhsm_try.rc != 0
+
+  rescue:
+    # 1) Vérifier que c'est bien un conflit UUID / duplicate
+    - name: "RHSM | Detect UUID conflict / duplicate"
+      ansible.builtin.set_fact:
+        rhsm_uuid_conflict: >-
+          {{
+            (rhsm_try.stderr | default('') is search('matches other registered hosts|duplicate|uuid', ignorecase=True))
+            or
+            (rhsm_try.stdout | default('') is search('matches other registered hosts|duplicate|uuid', ignorecase=True))
+          }}
+
+    - name: "Abort if failure is not UUID conflict"
+      ansible.builtin.fail:
+        msg: "Register failed but not a UUID/duplicate conflict. stdout={{ rhsm_try.stdout | default('') }} stderr={{ rhsm_try.stderr | default('') }}"
+      when: not (rhsm_uuid_conflict | bool)
+
+    # 2) Cleanup côté Satellite (hammer) UNIQUEMENT si conflit
+    - name: "SATELLITE | Cleanup old registration (hammer)"
+      ansible.builtin.import_tasks: hammer_cleanup.yml
+      when: rhsm_uuid_conflict | bool
+
+    # 3) Cleanup local RHSM
+    - name: "RHSM | Local cleanup"
+      ansible.builtin.import_tasks: rhsm_cleanup.yml
+      vars:
+        # ici on force la partie cleanup même si identity échoue
+        satellite_register_force: true
+      when: rhsm_uuid_conflict | bool
+
+    # 4) Retry register (force)
+    - name: "RHSM | Register (retry with --force)"
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - register
+          - "--activationkey={{ satellite_register_ak }}"
+          - "--org={{ satellite_register_org }}"
+          - --force
+      register: rhsm_retry
+      failed_when: rhsm_retry.rc != 0
+3) Note Safe Prod (très important)
+Ce mode rescue supprime côté Satellite l’ancien content-host/host → c’est voulu.
+Mets ce mécanisme uniquement sur les jobs “force” ou “repair”, sinon tu risques de supprimer des entrées valides.
+Tu peux ajouter une garde :
+Copy code
+Yaml
+when: satellite_register_force | default(false) | bool
+sur l’appel hammer_cleanup.yml.
+Si tu veux, je te fournis une version encore plus sûre :
+suppression uniquement si content-host trouvé ET correspond à la même IP/MAC (plus long mais blindé).
