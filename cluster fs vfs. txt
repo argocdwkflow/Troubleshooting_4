@@ -1,0 +1,181 @@
+Parfait, j’ai bien compris 👍
+Tu veux formaliser une demande / procédure de création des FS sur un cluster Veritas (VCS + VxVM + VxFS), en respectant un ordre strict des dossiers et sous-dossiers imbriqués, comme montré sur tes captures (dg_prod1_pkg2, dg_prod3_pkg5, SG online/offline, free space OK, etc.).
+Je te propose une méthode propre, N3-grade, que tu peux utiliser :
+soit comme procédure d’exécution
+soit comme demande officielle (RITM / change / mail / ticket)
+1️⃣ Pré-requis VALIDÉS (ce que montrent tes screenshots)
+Avant toute création, on vérifie :
+✔️ Cluster
+hastatus -sum → RUNNING sur les 2 nœuds
+Aucun SG critique en FAULTED
+Groupes concernés ONLINE sur un seul nœud (normal)
+✔️ Disk groups
+vxdg list
+dg_prod1_pkg2 → enabled, cds
+dg_prod3_pkg5 → enabled, cds
+✔️ Espace disque
+vxdg -u g -g <dg> free
+Espace contigu suffisant pour chaque FS
+👉 OK d’après tes captures (200+ GB free)
+2️⃣ Ordre STRICT de création (très important)
+⚠️ Toujours respecter cet ordre pour éviter :
+montages partiels
+dépendances cassées
+SG qui ne remonte pas
+Ordre logique
+Créer les volumes
+Créer les filesystems
+Créer les répertoires parents
+Monter les FS
+Déclarer dans VCS
+Tester switch SG
+3️⃣ Exemple COMPLET – dg_prod1_pkg2 (prod1)
+🔹 Volumes & FS à créer
+Mount point
+Taille
+/applis/AP02807-ATP00_comms/prod1-comms
+50G
+/applis/AP02807-ATP00_comms/prod1-comms/logs
+10G
+/applis/AP02807-ATP00_comms/prod1-comms/data
+50G
+/applis/AP02807-ATP00_phalanger/storage_prod1_itrp
+20G
+/applis/AP02807-ATP00_batch/prod1-batch
+15G
+/applis/AP02807-ATP00_batch/prod1-batch/logs
+10G
+🔹 Création volumes (exemple)
+Copy code
+Bash
+vxassist -g dg_prod1_pkg2 make vol_prod1_comms 50g
+vxassist -g dg_prod1_pkg2 make vol_prod1_comms_logs 10g
+vxassist -g dg_prod1_pkg2 make vol_prod1_comms_data 50g
+vxassist -g dg_prod1_pkg2 make vol_prod1_itrp 20g
+vxassist -g dg_prod1_pkg2 make vol_prod1_batch 15g
+vxassist -g dg_prod1_pkg2 make vol_prod1_batch_logs 10g
+🔹 Création des FS
+Copy code
+Bash
+mkfs -t vxfs /dev/vx/rdsk/dg_prod1_pkg2/vol_prod1_comms
+mkfs -t vxfs /dev/vx/rdsk/dg_prod1_pkg2/vol_prod1_comms_logs
+mkfs -t vxfs /dev/vx/rdsk/dg_prod1_pkg2/vol_prod1_comms_data
+mkfs -t vxfs /dev/vx/rdsk/dg_prod1_pkg2/vol_prod1_itrp
+mkfs -t vxfs /dev/vx/rdsk/dg_prod1_pkg2/vol_prod1_batch
+mkfs -t vxfs /dev/vx/rdsk/dg_prod1_pkg2/vol_prod1_batch_logs
+🔹 Création des répertoires (ordre imbriqué)
+Copy code
+Bash
+mkdir -p /applis/AP02807-ATP00_comms/prod1-comms/{logs,data}
+mkdir -p /applis/AP02807-ATP00_phalanger/storage_prod1_itrp
+mkdir -p /applis/AP02807-ATP00_batch/prod1-batch/logs
+🔹 Montage manuel (test)
+Copy code
+Bash
+mount -t vxfs /dev/vx/dsk/dg_prod1_pkg2/vol_prod1_comms /applis/AP02807-ATP00_comms/prod1-comms
+mount -t vxfs /dev/vx/dsk/dg_prod1_pkg2/vol_prod1_comms_logs /applis/AP02807-ATP00_comms/prod1-comms/logs
+mount -t vxfs /dev/vx/dsk/dg_prod1_pkg2/vol_prod1_comms_data /applis/AP02807-ATP00_comms/prod1-comms/data
+mount -t vxfs /dev/vx/dsk/dg_prod1_pkg2/vol_prod1_itrp /applis/AP02807-ATP00_phalanger/storage_prod1_itrp
+mount -t vxfs /dev/vx/dsk/dg_prod1_pkg2/vol_prod1_batch /applis/AP02807-ATP00_batch/prod1-batch
+mount -t vxfs /dev/vx/dg_prod1_pkg2/vol_prod1_batch_logs /applis/AP02807-ATP00_batch/prod1-batch/logs
+4️⃣ Déclaration dans VCS (propre)
+Dans le Service Group concerné (acetp_prod1_pkg2-SG) :
+Resource type : Mount
+Attributs :
+MountPoint
+BlockDevice
+FSType = vxfs
+FsckOpt = -y
+Dépendance :
+Mount dépend du DiskGroup
+👉 Ordre recommandé :
+Copy code
+
+DG → Volume → Mount parent → Mount child
+5️⃣ Même logique pour dg_prod3_pkg5 (prod3)
+Exactement la même procédure, en remplaçant :
+prod1 → prod3
+dg_prod1_pkg2 → dg_prod3_pkg5
+SG : acetp_prod3_pkg5-SG
+6️⃣ Tests finaux obligatoires
+Copy code
+Bash
+hagrp -offline acetp_prodX_pkgY-SG -sys <node>
+hagrp -online  acetp_prodX_pkgY-SG -sys <other_node>
+Puis :
+Copy code
+Bash
+df -h | egrep "AP02807|prod"
+7️⃣ Version “texte prêt à coller” pour une DEMANDE (RITM)
+Si tu veux, je peux te fournir :
+✅ une demande RITM prête
+✅ un mail formel
+✅ un runbook PDF
+✅ une checklist N3 avant/après
+Dis-moi juste ce que tu veux comme format 😉
+
+
+Parfait 👍
+Voici comment ajouter proprement les entrées /etc/fstab pour un cluster Veritas (VxFS), avec dossiers imbriqués, en respectant les bonnes pratiques VCS.
+⚠️ Important (cluster Veritas)
+👉 Le montage est piloté par VCS, pas par le boot Linux
+👉 Donc noauto est OBLIGATOIRE
+👉 /etc/fstab sert surtout de référence système / secours
+🔑 Règles FSTAB en cluster Veritas
+Toujours utiliser le device VxVM
+/dev/vx/dsk/<dg>/<vol>
+Toujours mettre :
+vxfs
+noauto
+Pas de fsck automatique → 0 0
+📌 Exemple COMPLET – dg_prod1_pkg2 (prod1)
+À ajouter sur les deux nœuds :
+Copy code
+Fstab
+# === PROD1 - dg_prod1_pkg2 ===
+/dev/vx/dsk/dg_prod1_pkg2/vol_prod1_comms        /applis/AP02807-ATP00_comms/prod1-comms               vxfs  noauto  0 0
+/dev/vx/dsk/dg_prod1_pkg2/vol_prod1_comms_logs   /applis/AP02807-ATP00_comms/prod1-comms/logs          vxfs  noauto  0 0
+/dev/vx/dsk/dg_prod1_pkg2/vol_prod1_comms_data   /applis/AP02807-ATP00_comms/prod1-comms/data          vxfs  noauto  0 0
+
+/dev/vx/dsk/dg_prod1_pkg2/vol_prod1_itrp         /applis/AP02807-ATP00_phalanger/storage_prod1_itrp    vxfs  noauto  0 0
+
+/dev/vx/dsk/dg_prod1_pkg2/vol_prod1_batch        /applis/AP02807-ATP00_batch/prod1-batch               vxfs  noauto  0 0
+/dev/vx/dsk/dg_prod1_pkg2/vol_prod1_batch_logs   /applis/AP02807-ATP00_batch/prod1-batch/logs          vxfs  noauto  0 0
+📌 Exemple COMPLET – dg_prod3_pkg5 (prod3)
+Copy code
+Fstab
+# === PROD3 - dg_prod3_pkg5 ===
+/dev/vx/dsk/dg_prod3_pkg5/vol_prod3_comms        /applis/AP02807-ATP00_comms/prod3-comms               vxfs  noauto  0 0
+/dev/vx/dsk/dg_prod3_pkg5/vol_prod3_comms_logs   /applis/AP02807-ATP00_comms/prod3-comms/logs          vxfs  noauto  0 0
+/dev/vx/dsk/dg_prod3_pkg5/vol_prod3_comms_data   /applis/AP02807-ATP00_comms/prod3-comms/data          vxfs  noauto  0 0
+
+/dev/vx/dsk/dg_prod3_pkg5/vol_prod3_itrp         /applis/AP02807-ATP00_phalanger/storage_prod3_itrp    vxfs  noauto  0 0
+
+/dev/vx/dsk/dg_prod3_pkg5/vol_prod3_batch        /applis/AP02807-ATP00_batch/prod3-batch               vxfs  noauto  0 0
+/dev/vx/dsk/dg_prod3_pkg5/vol_prod3_batch_logs   /applis/AP02807-ATP00_batch/prod3-batch/logs          vxfs  noauto  0 0
+🧠 Bonnes pratiques N3 (important)
+✅ À FAIRE
+Même /etc/fstab sur tous les nœuds
+Commenter clairement chaque bloc
+Vérifier les dossiers existent :
+Copy code
+Bash
+ls -ld /applis/AP02807*
+❌ À NE JAMAIS FAIRE
+❌ pas de defaults
+❌ pas de auto
+❌ pas de mount -a
+❌ pas de montage hors VCS
+🔍 Vérification finale
+Copy code
+Bash
+grep AP02807 /etc/fstab
+Puis laisser VCS gérer les montages :
+Copy code
+Bash
+hagrp -online acetp_prodX_pkgY-SG -sys <node>
+Si tu veux, je peux te fournir :
+🧾 fstab “gold template” cluster
+📋 checklist audit fstab Veritas
+🤖 script auto-génération fstab depuis un tableau
+Dis-moi 👍
