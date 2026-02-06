@@ -1,0 +1,161 @@
+---
+# roles/satellite_register/tasks/main.yml
+# SAFE PROD - cleaned version (NO hammer, NO uuidgen, NO shell for register)
+# Keeps your CA install + yum/dnf cache logic, but fixes RHSM registration robustly.
+
+# ------------------------------------------------------------
+# 0) Basic guards (keep/adapt to your role variables)
+# ------------------------------------------------------------
+- name: "Fail if we do not know the env"
+  ansible.builtin.fail:
+    msg: "The env {{ satellite_register_env }} is unknown, valid envs are {{ satellite_register_env_mapping.keys() }}"
+  when: satellite_register_env not in satellite_register_env_mapping.keys()
+
+- name: "Define satellite capsule based on environment if not supplied"
+  ansible.builtin.set_fact:
+    satellite_register_capsule: "{{ satellite_register_capsules[satellite_register_env_mapping[satellite_register_env]] }}"
+  when: satellite_register_capsule is not defined
+
+# ------------------------------------------------------------
+# 1) Connectivity check (HTTPS 443) to capsule VIP
+# ------------------------------------------------------------
+- name: "Derive satellite host to probe Capsule VIP"
+  ansible.builtin.set_fact:
+    satellite_probe_host: "{{ satellite_register_capsule }}"
+
+- name: "Check HTTPS (443) reachability to {{ satellite_probe_host }}"
+  ansible.builtin.wait_for:
+    host: "{{ satellite_probe_host }}"
+    port: 443
+    state: started
+    timeout: 5
+  register: port443
+  ignore_errors: true
+
+- name: "Abort hard fail when 443 is closed"
+  ansible.builtin.fail:
+    msg: "Port 443 is closed/unreachable on {{ satellite_probe_host }} - aborting operations for this host."
+  when: port443 is failed or (port443.failed | default(false))
+
+# ------------------------------------------------------------
+# 2) Activation key (keep/adapt naming to your policy)
+# ------------------------------------------------------------
+- name: "Define activation key based on distribution and environment if not supplied"
+  ansible.builtin.set_fact:
+    satellite_register_ak: >-
+      {% if (satellite_register_minor_version | default('') | length) > 0 %}
+      RHEL{{ satellite_register_major_version }}-{{ satellite_register_minor_version }}-{{ satellite_register_arch }}-{{ satellite_register_env_mapping[satellite_register_env] }}
+      {% else %}
+      RHEL{{ satellite_register_major_version }}-{{ satellite_register_arch }}-{{ satellite_register_env_mapping[satellite_register_env] }}
+      {% endif %}
+  when: satellite_register_ak is not defined
+
+# ------------------------------------------------------------
+# 3) CA installation (keep your logic)
+# ------------------------------------------------------------
+- name: "Make sure ca folder exists"
+  ansible.builtin.file:
+    path: "/etc/rhsm/ca"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "Download certificates from capsule server"
+  ansible.builtin.get_url:
+    url: "https://{{ satellite_register_capsule }}/pub/katello-server-ca.crt"
+    dest: "/etc/rhsm/ca/katello-server-ca.pem"
+    validate_certs: "{{ (not (satellite_register_insecure | default(false) | bool)) }}"
+    mode: "0644"
+
+- name: "Install Satellite CA certificate in system trust anchors"
+  ansible.builtin.copy:
+    remote_src: true
+    src: "/etc/rhsm/ca/katello-server-ca.pem"
+    dest: "/etc/pki/ca-trust/source/anchors/katello-server-ca.pem"
+    owner: root
+    group: root
+    mode: "0644"
+  register: ca_installed
+
+- name: "Update system CA trust store"
+  ansible.builtin.command: update-ca-trust
+  when: ca_installed.changed
+  changed_when: true
+
+- name: "Verify CA trust installation"
+  ansible.builtin.command: trust list
+  register: trust_output
+  changed_when: false
+  failed_when: false
+
+# ------------------------------------------------------------
+# 4) Configure subscription-manager (NO shell)
+# ------------------------------------------------------------
+- name: "Configure subscription-manager"
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - "--rhsm.baseurl=https://{{ satellite_register_capsule }}/pulp/content"
+      - "--rhsm.repo_ca_cert=/etc/rhsm/ca/katello-server-ca.pem"
+      - "--server.hostname={{ satellite_register_capsule }}"
+  changed_when: false
+  failed_when: false
+
+# ------------------------------------------------------------
+# 5) RHSM cleanup (your dedicated file) + Register (SAFE PROD)
+# IMPORTANT: This replaces your old block/rescue/uuidgen completely.
+# ------------------------------------------------------------
+- name: "RHSM | Cleanup before register (local only)"
+  ansible.builtin.import_tasks: rhsm_cleanup.yml
+
+- name: "RHSM | Register (safe, NO shell, single call)"
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - register
+      - "--activationkey={{ satellite_register_ak }}"
+      - "--org={{ satellite_register_org }}"
+      - "{{ '--force' if (satellite_register_force | default(false) else omit) }}"
+  register: rhsm_register
+  failed_when: rhsm_register.rc != 0
+  changed_when: "'The system has been registered' in (rhsm_register.stdout | default(''))"
+
+- name: "RHSM | Verify identity"
+  ansible.builtin.command: subscription-manager identity
+  register: rhsm_identity_final
+  failed_when: rhsm_identity_final.rc != 0
+  changed_when: false
+
+# ------------------------------------------------------------
+# 6) yum/dnf cache handling (keep your existing logic)
+# ------------------------------------------------------------
+- name: "Set package manager cache path"
+  ansible.builtin.set_fact:
+    pkg_cache_path: "{{ '/var/cache/yum' if (ansible_distribution_major_version | int == 7) else '/var/cache/dnf' }}"
+
+- name: "Clean yum/dnf cache safely"
+  ansible.builtin.command: "{{ ansible_pkg_mgr | default('dnf') }} clean all"
+  changed_when: true
+  failed_when: false
+
+- name: "Clean yum/dnf cache directory"
+  ansible.builtin.shell: "rm -rf {{ pkg_cache_path }}/*"
+  args:
+    warn: false
+  changed_when: true
+  failed_when: false
+
+- name: "Check free space on package cache filesystem (KB)"
+  ansible.builtin.command: "df -Pk {{ pkg_cache_path }}"
+  register: cache_df
+  changed_when: false
+  failed_when: false
+
+- name: "Enable rhsmcertd service to periodically update entitlement certificates"
+  ansible.builtin.service:
+    name: rhsmcertd
+    enabled: true
+    state: started
+  failed_when: false
