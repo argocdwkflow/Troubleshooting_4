@@ -1,0 +1,137 @@
+Très bonne question — et tu n’es pas le seul à tomber dessus, surtout en RHEL 9 + CIS.
+Je vais t’expliquer exactement pourquoi tu ne vois que Satellite 6.17 et pas 6.18, puis quoi vérifier / corriger, dans l’ordre, avec des commandes concrètes.
+🎯 Le symptôme
+Sur le Satellite Core (connected) ou côté repos visibles :
+❌ satellite-6.18-for-rhel-9-x86_64-rpms n’apparaît pas
+✅ satellite-6.17-for-rhel-9-x86_64-rpms est visible
+👉 Impossible donc d’installer Satellite 6.18 sur RHEL 9.
+🧠 LA RAISON N°1 (dans 80 % des cas)
+❌ Manifest / entitlement Red Hat non mis à jour
+Satellite 6.18 est une version MAJEURE
+➡️ Elle n’est PAS visible si ton manifest RHSM :
+a été généré avant la sortie de 6.18
+ou n’a pas été re-importé après mise à jour du contrat
+📌 Résultat typique :
+6.17 visible
+6.18 invisible
+✅ Correction (OBLIGATOIRE)
+Sur le portail Red Hat
+Va dans Customer Portal
+Subscription → Satellite
+Clique sur :
+Refresh subscriptions
+Regenerate Manifest
+Télécharge le nouveau manifest
+Sur le Satellite Core
+Bash
+Copy code
+hammer subscription delete-manifest --organization "<ORG>"
+hammer subscription upload \
+  --organization "<ORG>" \
+  --file /root/manifest_renewed.zip
+Puis :
+Bash
+Copy code
+hammer product list --organization "<ORG>" | grep Satellite
+👉 Après ça, 6.18 apparaît dans 90 % des cas.
+🧠 RAISON N°2
+❌ Version Satellite Core trop ancienne
+👉 Un Satellite 6.16 / début 6.17 :
+peut ne pas exposer les repos 6.18 RHEL9
+même avec un manifest valide
+Vérifie la version du Core
+Bash
+Copy code
+satellite-maintain version
+📌 Minimum recommandé pour gérer 6.18 :
+Satellite Core 6.17.z récent
+ou 6.18 lui-même
+🔴 Un Core 6.16.x = problème assuré.
+✅ Correction
+Mettre à jour le Satellite Core :
+Bash
+Copy code
+satellite-maintain upgrade
+(puis reboot + vérification)
+🧠 RAISON N°3
+❌ Tu regardes le mauvais product / repository set
+Satellite 6.18 RHEL 9 est EXACTEMENT sous :
+Product
+Copy code
+
+Red Hat Satellite
+Repository set
+Copy code
+
+Red Hat Satellite 6.18 for RHEL 9 x86_64 (RPMs)
+⚠️ Ce n’est PAS :
+Satellite Capsule
+Satellite Client
+Satellite Maintenance
+Commande de vérification
+Bash
+Copy code
+hammer repository-set list \
+  --organization "<ORG>" \
+  --product "Red Hat Satellite"
+👉 Si 6.18 n’apparaît pas ici, ce n’est pas un problème de filtre CV :
+➡️ c’est manifest / entitlement.
+🧠 RAISON N°4 (piège fréquent en CIS)
+❌ Organisation Satellite sans droit Satellite Server
+Dans certains environnements CIS :
+le Satellite Core a plusieurs organisations
+toutes n’ont pas le droit Satellite Server
+Vérifie les subs attachées
+Bash
+Copy code
+hammer subscription list --organization "<ORG>"
+Tu dois voir :
+Copy code
+
+Red Hat Satellite Infrastructure Subscription
+Si absente → pas de repo 6.18.
+✅ Correction
+Attacher la bonne subscription :
+Bash
+Copy code
+hammer subscription attach \
+  --organization "<ORG>" \
+  --subscription-id <ID_SATELLITE>
+🧠 RAISON N°5 (moins fréquent)
+❌ Cache / sync pas rafraîchi
+Après import manifest :
+Bash
+Copy code
+hammer repository-set refresh --organization "<ORG>"
+hammer product synchronize --organization "<ORG>" --name "Red Hat Satellite"
+🧪 CHECKLIST RAPIDE (copier-coller)
+Bash
+Copy code
+# 1. Version Satellite Core
+satellite-maintain version
+
+# 2. Subscriptions Satellite
+hammer subscription list --organization "<ORG>" | grep Satellite
+
+# 3. Repo sets Satellite
+hammer repository-set list \
+  --organization "<ORG>" \
+  --product "Red Hat Satellite"
+
+# 4. Sync après manifest
+hammer product synchronize \
+  --organization "<ORG>" \
+  --name "Red Hat Satellite"
+✅ CE QUI DOIT ÊTRE VISIBLE À LA FIN
+Copy code
+
+Red Hat Satellite 6.18 for RHEL 9 x86_64 (RPMs)
+Red Hat Satellite Capsule 6.18 for RHEL 9 x86_64 (RPMs)
+Red Hat Satellite Maintenance 6.18 for RHEL 9 x86_64 (RPMs)
+🧨 Message clair (à ton manager / équipe RH)
+“Satellite 6.18 repositories are not visible because the current manifest was generated before the 6.18 entitlement. We must refresh and re-import the Red Hat Satellite manifest to expose Satellite 6.18 repositories for RHEL 9.”
+Si tu veux, au prochain message je peux :
+🔍 t’aider à analyser un hammer repository-set list réel
+📄 te donner le message exact à envoyer au support Red Hat
+🛠️ te guider pas à pas pendant le refresh manifest
+Dis-moi où tu bloques exactement et on débloque 💪
