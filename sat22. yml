@@ -1,0 +1,102 @@
+Parfait 👍
+Ton screenshot confirme que tu as maintenant TOUT ce qu’il faut (IDs exacts). On est au stade exécution propre N3, sans approximation.
+✅ Ce que montre ton écran (validation finale)
+🔹 Content View cible
+Dans hammer content-view list :
+Copy code
+
+ID   NAME
+242  CCV RHEL 9.6 s390x
+👉 CV_ID = 242 ✅
+🔹 Lifecycle Environment DEV
+Tu as déjà validé :
+Copy code
+
+Dev_IBMz → ID = 20
+👉 LE_ID = 20 ✅
+🎯 Objectif
+👉 Basculer TOUTES les machines de Dev_IBMz vers :
+Lifecycle Environment : Dev_IBMz (ID 20)
+Content View : CCV RHEL 9.6 s390x (ID 242)
+🛡️ Étape 1 — Dry-run (recommandé, sans modification)
+Juste pour voir la liste exacte des machines impactées :
+Bash
+Copy code
+hammer host list \
+  --organization "gggg IBMz" \
+  --search 'lifecycle_environment_id=20' \
+  --fields "Name,Content View"
+➡️ Si la liste est OK → go prod.
+🚀 Étape 2 — Commande FINALE (massive, safe, IDs only)
+Bash
+Copy code
+ORG="ggg IBMz"
+LE_ID=20
+CV_ID=242
+
+hammer host list \
+  --organization "$ORG" \
+  --search 'lifecycle_environment_id=20' \
+  --fields Name \
+  --per-page 1000 | awk 'NR>1 && NF{print $1}' \
+| while read -r HOST; do
+    echo ">>> Updating $HOST"
+    hammer host update \
+      --organization "$ORG" \
+      --name "$HOST" \
+      --lifecycle-environment-id "$LE_ID" \
+      --content-view-id "$CV_ID"
+  done
+✔️ Pourquoi cette commande est parfaite
+IDs → zéro ambiguïté
+même LE (Dev_IBMz) → pas de rupture de chaîne
+changement uniquement côté Satellite
+totalement supportée Red Hat
+🔄 Étape 3 — Faire prendre effet côté OS (OBLIGATOIRE)
+Sur les machines (via Ansible / AAP si possible) :
+Bash
+Copy code
+subscription-manager refresh
+dnf clean all
+dnf makecache
+Vérification côté host
+Bash
+Copy code
+subscription-manager identity
+Tu dois voir :
+Copy code
+
+environment name: Dev_/ccv-rhel-9-6-s390x
+🧪 Étape 4 — Vérification finale Satellite
+Bash
+Copy code
+hammer host list \
+  --organization "xcxz" \
+  --search 'lifecycle_environment_id=20 and content_view_id=242' \
+  --fields "Name,Content View,Lifecycle Environment"
+➡️ Si tous les hosts apparaissent → migration terminée ✅
+🧠 Règle N3 (à retenir pour toujours)
+Activation Key = enregistrement uniquement
+Content View + Lifecycle Environment = pilotés par Satellite DB via hammer
+🧯 Rollback prêt si besoin (optionnel)
+Si tu veux revenir à l’ancienne CV (ex. CCV RHEL 9 s390x, ID 262 par ex.) :
+Bash
+Copy code
+OLD_CV_ID=262
+
+hammer host list \
+  --organization "$ORG" \
+  --search 'lifecycle_environment_id=20' \
+  --fields Name \
+  --per-page 1000 | awk 'NR>1 && NF{print $1}' \
+| while read -r HOST; do
+    hammer host update \
+      --organization "$ORG" \
+      --name "$HOST" \
+      --lifecycle-environment-id 20 \
+      --content-view-id "$OLD_CV_ID"
+  done
+Si tu veux, prochain pas possible :
+🔁 automatiser tout ça via Ansible AAP
+📊 générer un rapport avant/après
+🚦 préparer la promotion vers
