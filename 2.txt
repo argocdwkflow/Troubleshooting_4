@@ -1,0 +1,27 @@
+- name: Start makecache asynchronously (won't block)
+  ansible.builtin.shell: |
+    set -o pipefail
+    timeout 180 {{ ansible_pkg_mgr }} -q makecache
+  args:
+    warn: false
+  async: 200
+  poll: 0
+  register: makecache_job
+  changed_when: false
+  failed_when: false
+
+- name: Wait for makecache job to finish
+  ansible.builtin.async_status:
+    jid: "{{ makecache_job.ansible_job_id }}"
+  register: makecache_status
+  until: makecache_status.finished
+  retries: 20
+  delay: 10
+  changed_when: false
+  failed_when: false
+
+- name: Kill makecache if still running (safety net)
+  ansible.builtin.shell: |
+    pkill -f "{{ ansible_pkg_mgr }}.*makecache" || true
+  when: not makecache_status.finished
+  changed_when: false
