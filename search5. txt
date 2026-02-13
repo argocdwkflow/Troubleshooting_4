@@ -1,0 +1,41 @@
+ORG="Xxxxxxx"
+ENV="Nonprod"
+
+OUT9="/tmp/kernels_rhel9_4_9_6.txt"
+OUT8="/tmp/kernel_rhel8_latest.txt"
+OUT7="/tmp/kernel_rhel7_latest.txt"
+
+: > "$OUT9"
+: > "$OUT8"
+: > "$OUT7"
+
+for cv in "CCV RHEL 9.4 x86_64" "CCV RHEL 9.6 x86_64"; do
+  hammer --csv --no-headers package list \
+    --organization "$ORG" \
+    --content-view "$cv" \
+    --lifecycle-environment "$ENV" \
+    --search 'name = kernel' \
+    --per-page 10000 \
+    --fields filename \
+  | sort -t, -k1,1V | tail -n 1 >> "$OUT9"
+done
+
+for cv_out in \
+  "CCV RHEL 8 x86_64:$OUT8" \
+  "CCV RHEL 7 x86_64:$OUT7"
+do
+  cv="${cv_out%%:*}"
+  out="${cv_out##*:}"
+  hammer --csv --no-headers package list \
+    --organization "$ORG" \
+    --content-view "$cv" \
+    --lifecycle-environment "$ENV" \
+    --search 'name = kernel' \
+    --per-page 10000 \
+    --fields filename \
+  | sort -t, -k1,1V | tail -n 1 > "$out"
+done
+
+echo "== $OUT9 =="; cat "$OUT9"
+echo "== $OUT8 =="; cat "$OUT8"
+echo "== $OUT7 =="; cat "$OUT7"
