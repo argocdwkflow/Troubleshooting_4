@@ -1,0 +1,20 @@
+hammer --csv --no-headers package list \
+  --organization "XXX Linux" \
+  --content-view "CCV RHEL" \
+  --lifecycle-environment "Nonprod" \
+  --search 'name = kernel' \
+  --per-page 10000 \
+  --fields filename \
+| awk -F, '
+  function tag(fn){
+    if (fn ~ /el9_8/) return "el9_8";
+    if (fn ~ /el9_6/) return "el9_6";
+    if (fn ~ /el9_4/) return "el9_4";
+    if (fn ~ /el8/)   return "el8";
+    if (fn ~ /el7/)   return "el7";
+    return "";
+  }
+  { t=tag($1); if(t!="") print t","$1 }
+' \
+| sort -t, -k1,1 -k2,2V -r \
+| awk -F, '!seen[$1]++ { print $2 }'
