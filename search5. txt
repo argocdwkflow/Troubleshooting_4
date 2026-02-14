@@ -1,0 +1,26 @@
+latest_kernel_stream() {
+  # $1 = CCV
+  # $2 = stream ex: el9_4 ou el9_6
+  local ccv="$1"
+  local stream="$2"
+
+  tmp=$(mktemp)
+
+  hammer --csv --no-headers package list \
+    --organization "$ORG" \
+    --content-view "$ccv" \
+    --lifecycle-environment "$LE" \
+    --search 'name = kernel' \
+    --per-page 10000 \
+    --fields filename \
+  | sed 's/"//g' \
+  | grep -E '\.rpm$' \
+  > "$tmp"
+
+  # extraction intelligente par stream
+  grep -E "$stream" "$tmp" \
+    | sort -V \
+    | tail -n1
+
+  rm -f "$tmp"
+}
