@@ -1,0 +1,148 @@
+OK je vois exactement ton besoin :
+Si item.key contient RHEL7 ou RHEL8 👉 tu peux utiliser la méthode standard (simple) avec --packages-restrict-latest true (1 seule ligne).
+Si item.key = “CCV RHEL 9 x86_64” (global) 👉 ce CCV contient plusieurs streams (9.4 + 9.6), donc --packages-restrict-latest true te donne une seule ligne globale, pas 2 lignes.
+➡️ Il faut post-traiter la liste de packages et sortir 2 lignes : une pour .el9_4 et une pour .el9_6.
+Ci-dessous je te donne la correction dans Ansible (dans ton publish_kernel_versions.yml) avec un when basé sur item.key.
+✅ 1) Logique Ansible à appliquer
+Cas A — RHEL7 / RHEL8 (standard)
+1 fichier par CCV
+commande hammer avec --packages-restrict-latest true
+parsing robuste (id,filename)
+Cas B — RHEL9 global (spécial)
+1 fichier unique “rhel9”
+tu récupères tous les kernels du CCV RHEL9 global
+tu filtres .el9_4 et .el9_6
+tu fais un tri version et tu sors 2 lignes (une par minor)
+✅ 2) Exemple de tâches Ansible prêtes à coller
+À mettre dans tasks/publish_kernel_versions.yml (ou fichier séparé inclus)
+Yaml
+Copy code
+- name: Define kernel version output file
+  ansible.builtin.set_fact:
+    kernel_filename: "{{ _kernel_lists_dir }}/{{ item.key | regex_replace(' ', '_') }}_{{ env }}.txt"
+
+# ----------------------------
+# RHEL7/RHEL8: standard method
+# ----------------------------
+- name: Get latest kernel for RHEL7/RHEL8 (packages-restrict-latest)
+  ansible.builtin.shell: |
+    set -o pipefail
+    hammer --csv --no-headers package list \
+      --organization "{{ satellite_org }}" \
+      --content-view "{{ item.key }}" \
+      --lifecycle-environment "{{ env }}" \
+      --search 'name = kernel' \
+      --packages-restrict-latest true \
+      --per-page 10000 \
+      --fields filename \
+    | sed 's/"//g' \
+    | awk -F, '{ if (NF>=2) print $2; else print $1 }' \
+    | grep -E '\.rpm$' \
+    > "{{ kernel_filename }}"
+  args:
+    executable: /bin/bash
+  when: item.key is search('CCV RHEL 7|CCV RHEL 8')
+  changed_when: false
+
+# ------------------------------------------
+# RHEL9 global: special (2 lines: 9.4 + 9.6)
+# ------------------------------------------
+- name: Get latest kernel for RHEL9 global (2 minors: el9_4 + el9_6)
+  ansible.builtin.shell: |
+    set -o pipefail
+
+    hammer --csv --no-headers package list \
+      --organization "{{ satellite_org }}" \
+      --content-view "{{ item.key }}" \
+      --lifecycle-environment "{{ env }}" \
+      --search 'name = kernel' \
+      --per-page 10000 \
+      --fields filename \
+    | sed 's/"//g' \
+    | awk -F, '{ if (NF>=2) print $2; else print $1 }' \
+    | grep -E '\.rpm$' \
+    | awk '
+        /el9_4/ {a[$0]=1}
+        /el9_6/ {b[$0]=1}
+      ' >/dev/null
+
+    # On sort 2 lignes:
+    # - la dernière (version max) pour el9_4
+    # - la dernière (version max) pour el9_6
+    hammer --csv --no-headers package list \
+      --organization "{{ satellite_org }}" \
+      --content-view "{{ item.key }}" \
+      --lifecycle-environment "{{ env }}" \
+      --search 'name = kernel' \
+      --per-page 10000 \
+      --fields filename \
+    | sed 's/"//g' \
+    | awk -F, '{ if (NF>=2) print $2; else print $1 }' \
+    | grep -E '\.rpm$' \
+    | awk '
+        function pick_latest(regex,   cmd, out) {
+          cmd = "grep -E \"" regex "\" | sort -V | tail -n 1"
+          while ((cmd | getline out) > 0) {}
+          close(cmd)
+          if (out != "") print out
+        }
+        BEGIN {
+          # important: on lit tout stdin dans un fichier temporaire via cat
+        }
+      '  # placeholder
+  args:
+    executable: /bin/bash
+  when: item.key is search('CCV RHEL 9 x86_64')
+  changed_when: false
+⛔ Le bloc RHEL9 ci-dessus contient un “placeholder” car AWK ne peut pas relire stdin deux fois proprement sans fichier temporaire.
+👉 Je te donne donc la version propre et simple avec un fichier temp (fiable en prod).
+✅ 3) Version RHEL9 propre (fiable) avec temp file
+Remplace le task RHEL9 par celui-ci :
+Yaml
+Copy code
+- name: Get latest kernel for RHEL9 global (2 minors: el9_4 + el9_6) - reliable
+  ansible.builtin.shell: |
+    set -o pipefail
+    tmp="/tmp/kernel_list_{{ item.key | regex_replace(' ', '_') }}_{{ env }}.txt"
+
+    hammer --csv --no-headers package list \
+      --organization "{{ satellite_org }}" \
+      --content-view "{{ item.key }}" \
+      --lifecycle-environment "{{ env }}" \
+      --search 'name = kernel' \
+      --per-page 10000 \
+      --fields filename \
+    | sed 's/"//g' \
+    | awk -F, '{ if (NF>=2) print $2; else print $1 }' \
+    | grep -E '\.rpm$' \
+    > "$tmp"
+
+    {
+      grep -E 'el9_4' "$tmp" | sort -V | tail -n 1
+      grep -E 'el9_6' "$tmp" | sort -V | tail -n 1
+    } > "{{ kernel_filename }}"
+
+    rm -f "$tmp"
+  args:
+    executable: /bin/bash
+  when: item.key is search('CCV RHEL 9 x86_64')
+  changed_when: false
+✅ Résultat : ton fichier RHEL9 aura 2 lignes :
+kernel…el9_4…
+kernel…el9_6…
+✅ 4) Règle “si un jour RHEL 9.8”
+Si tu veux que ça marche automatiquement pour tout el9_X (9.4 / 9.6 / 9.8 …) au lieu de coder 4 et 6, utilise ceci :
+Bash
+Copy code
+awk -F'el9_' '{print $2}' | cut -d. -f1
+Mais en Ansible je te le fais propre si tu veux : extraction dynamique de tous les minors présents → dernière version par minor.
+5) Condition when simple
+RHEL7/8 :
+Yaml
+Copy code
+when: item.key is search('CCV RHEL 7|CCV RHEL 8')
+RHEL9 global :
+Yaml
+Copy code
+when: item.key is search('CCV RHEL 9 x86_64')
+Si tu me confirmes les noms exacts de tes CCV (ex: CCV RHEL 9 x86_64 ou CCV RHEL9 x86_64 avec/sans espace), je te donne la version finale “copier-coller” complète dans ton publish_kernel_versions.yml (sans placeholder, sans erreurs).
