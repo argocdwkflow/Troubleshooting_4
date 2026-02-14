@@ -1,0 +1,15 @@
+ORG="rhel900"
+CCV="CCV9"
+LE="Prod"
+
+for s in el9_4 el9_6; do
+  hammer --csv --no-headers package list \
+    --organization "$ORG" \
+    --content-view "$CCV" \
+    --lifecycle-environment "$LE" \
+    --search "name = kernel and filename ~ $s" \
+    --order "id DESC" \
+    --per-page 1 \
+    --fields filename \
+  | sed 's/"//g'
+done
