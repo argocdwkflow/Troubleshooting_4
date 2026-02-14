@@ -1,0 +1,105 @@
+Voici le fichier tasks/publish_kernel_versions.yml complet (corrigé) avec :
+RHEL7/RHEL8 → méthode standard --packages-restrict-latest true (1 ligne)
+RHEL9 global (CCV RHEL 9 x86_64) → méthode spéciale : sortie 2 lignes (dernière .el9_4 + dernière .el9_6)
+Parsing robuste car chez toi --fields retourne souvent id,filename (donc on récupère toujours le dernier champ)
+Les fichiers sont écrits dans : {{ _kernel_lists_dir }}/kernel_version_{{ org_label }}_{{ env_label }}_{{ ccv_label }}.txt
+Owner/group/mode appliqués comme avant
+⚠️ Remplace juste la regex CCV RHEL 9 x86_64 si ton nom diffère (ex: double espaces, “CCV RHEL9 …”, etc.)
+Yaml
+Copy code
+---
+# tasks/publish_kernel_versions.yml
+
+- name: Create directory '{{ _kernel_lists_dir }}' if it does not exist
+  ansible.builtin.file:
+    path: "{{ _kernel_lists_dir }}"
+    state: directory
+    owner: apache
+    group: apache
+    mode: "0755"
+  tags: always
+
+# ------------------------------------------------------------
+# Build labels + output filename for each CCV
+# ------------------------------------------------------------
+- name: Create kernel versions file for each CCV (RHEL7/8 standard, RHEL9 global special)
+  ansible.builtin.shell: |
+    set -o pipefail
+
+    env_label="$(hammer --no-headers --csv lifecycle-environment show \
+      --name '{{ env }}' \
+      --organization '{{ satellite_org }}' \
+      --fields Label | tr -d '"')"
+
+    org_label="$(hammer --no-headers --csv organization info \
+      --name '{{ satellite_org }}' \
+      --fields Label | tr -d '"')"
+
+    ccv_label="$(hammer --no-headers --csv content-view list \
+      --name '{{ item.key }}' \
+      --organization '{{ satellite_org }}' \
+      --fields Label | tr -d '"')"
+
+    filename="{{ _kernel_lists_dir }}/kernel_version_${org_label}_${env_label}_${ccv_label}.txt"
+
+    echo "File updated at {{ ansible_date_time.date }} => ${filename}"
+
+    # ---------------------------
+    # SPECIAL CASE: RHEL9 GLOBAL
+    # ---------------------------
+    if echo "{{ item.key }}" | grep -Eq '^CCV RHEL 9 x86_64$'; then
+      tmp="/tmp/kernel_list_${org_label}_${env_label}_${ccv_label}.$$"
+
+      # Get full list (CSV may contain id,filename OR only filename -> always take last field)
+      hammer --csv --no-headers package list \
+        --organization "{{ satellite_org }}" \
+        --content-view "{{ item.key }}" \
+        --lifecycle-environment "{{ env }}" \
+        --search 'name = kernel' \
+        --per-page 10000 \
+        --fields filename \
+      | tr -d '"' \
+      | awk -F, '{print $NF}' \
+      | grep -E '\.rpm$' \
+      > "${tmp}"
+
+      # Output 2 lines: latest el9_4 and latest el9_6
+      {
+        grep -E 'el9_4' "${tmp}" | sort -V | tail -n 1
+        grep -E 'el9_6' "${tmp}" | sort -V | tail -n 1
+      } > "${filename}"
+
+      rm -f "${tmp}"
+
+    # ---------------------------
+    # STANDARD CASE: RHEL7/RHEL8
+    # ---------------------------
+    else
+      hammer --csv --no-headers package list \
+        --organization "{{ satellite_org }}" \
+        --content-view "{{ item.key }}" \
+        --lifecycle-environment "{{ env }}" \
+        --search 'name = kernel' \
+        --packages-restrict-latest true \
+        --per-page 10000 \
+        --fields filename \
+      | tr -d '"' \
+      | awk -F, '{print $NF}' \
+      | grep -E '\.rpm$' \
+      > "${filename}"
+    fi
+
+    chown apache:apache "${filename}"
+    chmod 0644 "${filename}"
+  args:
+    executable: /bin/bash
+  loop: "{{ _ccvs_to_manage }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: always
+Pourquoi ton ancien fichier donnait un résultat “incorrect”
+Sur ton Satellite, hammer package list --fields filename renvoie parfois id,filename → si tu fais awk -F, '{print $1}' tu prends l’ID et tu casses tout.
+✅ Ici on fait awk -F, '{print $NF}' (toujours le dernier champ) → robuste.
+--packages-restrict-latest true sur un CCV global RHEL9 donne 1 seul kernel global (pas un par minor).
+✅ Ici on force 2 lignes via tri sort -V sur .el9_4 et .el9_6.
+Si tu veux que ça gère automatiquement 9.8 demain (sans coder el9_4/el9_6), dis-moi et je te donne la variante qui sort 1 ligne par minor trouvé (el9_4, el9_6, el9_8, etc.).
