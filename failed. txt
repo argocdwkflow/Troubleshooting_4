@@ -1,0 +1,14 @@
+- name: "RHSM | Fail if registration truly failed"
+  ansible.builtin.fail:
+    msg: >
+      RHSM registration failed.
+      retry_rc={{ rhsm_register_retry.rc | default('undefined') }}
+      retry_stderr={{ rhsm_register_retry.stderr | default('undefined') }}
+      initial_rc={{ rhsm_register.rc | default('undefined') }}
+      initial_stderr={{ rhsm_register.stderr | default('undefined') }}
+  when: >
+    (
+      rhsm_register_retry is defined and
+      rhsm_register_retry.rc is defined and
+      rhsm_register_retry.rc != 0
+    )
