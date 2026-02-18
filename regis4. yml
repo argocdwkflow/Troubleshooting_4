@@ -1,0 +1,49 @@
+- name: subscription
+  block:
+
+    - name: "RHSM | Register (safe, NO shell, single call)"
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - register
+          - --activationkey
+          - "{{ satellite_register_ak | trim }}"
+          - --org
+          - "{{ satellite_register_org | trim }}"
+          - "{{ (satellite_register_force | default(false)) | ternary('--force', omit) }}"
+      register: rhsm_register
+      changed_when: false
+      failed_when: rhsm_register.rc != 0
+      timeout: 300
+
+  rescue:
+
+    - name: "RHSM | Handle duplicate UUID error (422) via dedicated tasks file"
+      ansible.builtin.include_tasks: rhsm_uuid_422_rescue.yml
+
+  always:
+
+    - name: "RHSM | Debug (main + retry)"
+      ansible.builtin.debug:
+        msg:
+          - "MAIN rc={{ rhsm_register.rc | default('N/A') }} stderr={{ rhsm_register.stderr | default('') }}"
+          - "LOGICAL_UUID={{ rhsm_logical_uuid | default('N/A') }}"
+          - "RETRY rc={{ rhsm_register_retry.rc | default('N/A') }} stderr={{ rhsm_register_retry.stderr | default('') }}"
+        verbosity: 1
+
+    - name: "RHSM | Fail clearly if retry still failed (action required)"
+      ansible.builtin.fail:
+        msg: |
+          RHSM registration still failing after applying KB fix (custom dmi.system.uuid + facts cache cleanup).
+          - Logical UUID used: {{ rhsm_logical_uuid | default('N/A') }}
+          - Initial stderr: {{ rhsm_register.stderr | default('') }}
+          - Retry stderr: {{ rhsm_register_retry.stderr | default('') }}
+
+          Next actions:
+          1) Check Satellite setting:
+             Administer -> Settings -> Content -> 'Host Duplicate DMI UUIDs'
+          2) Regenerate BIOS/DMI UUID at hypervisor/provisioning layer (Terraform/VMware template issue).
+      when:
+        - rhsm_register_retry is defined
+        - rhsm_register_retry.rc is defined
+        - rhsm_register_retry.rc != 0
