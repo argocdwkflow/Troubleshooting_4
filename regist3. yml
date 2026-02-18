@@ -1,0 +1,184 @@
+OK ✅ tu veux extraire tout le bloc “rescue duplicate UUID (422)” dans un fichier séparé, puis l’appeler depuis le task principal qui fait l’enregistrement Satellite.
+La bonne pratique Ansible ici = include_tasks (car tu veux exécuter des tasks, avec variables, dans le même host context).
+1) Créer un fichier dédié : tasks/rhsm_uuid_422_rescue.yml
+Crée ce fichier dans ton rôle satellite_register :
+YAML
+Copy code
+---
+# tasks/rhsm_uuid_422_rescue.yml
+# Requires:
+#   - rhsm_register (result of initial register) available
+#   - satellite_register_ak, satellite_register_org
+# Sets:
+#   - rhsm_logical_uuid
+#   - rhsm_register_retry
+
+- name: "RHSM | Detect duplicate UUID error (422 / DMI UUID)"
+  ansible.builtin.set_fact:
+    rhsm_duplicate_uuid: >-
+      {{
+        (rhsm_register is defined) and
+        (
+          (rhsm_register.stderr | default('')) is search('HTTP error \\(422', ignorecase=True) or
+          (rhsm_register.stderr | default('')) is search('Unprocessable Entity', ignorecase=True) or
+          (rhsm_register.stderr | default('')) is search('DMI UUID', ignorecase=True) or
+          (rhsm_register.stderr | default('')) is search('matches other registered hosts', ignorecase=True)
+        )
+      }}
+
+- name: "RHSM | Fail fast if not duplicate-UUID case"
+  ansible.builtin.fail:
+    msg: |
+      RHSM register failed (not a duplicate UUID case).
+      rc={{ rhsm_register.rc | default('N/A') }}
+      stderr={{ rhsm_register.stderr | default('') }}
+  when: not rhsm_duplicate_uuid
+
+# --- KB: remove cloned RHSM cached facts ---
+- name: "RHSM | Remove cloned facts cache (facts.json)"
+  ansible.builtin.file:
+    path: /var/lib/rhsm/facts/facts.json
+    state: absent
+
+- name: "RHSM | Ensure RHSM facts dirs exist"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/rhsm/facts
+    - /var/lib/rhsm/facts
+
+# --- Idempotent: keep existing uuid.facts if already present ---
+- name: "RHSM | Stat uuid.facts"
+  ansible.builtin.stat:
+    path: /etc/rhsm/facts/uuid.facts
+  register: uuid_fact_stat
+
+- name: "RHSM | Read existing uuid.facts (if present)"
+  ansible.builtin.slurp:
+    src: /etc/rhsm/facts/uuid.facts
+  register: existing_uuid_fact
+  when: uuid_fact_stat.stat.exists
+
+- name: "RHSM | Generate new UUID only if uuid.facts missing"
+  ansible.builtin.command: uuidgen
+  register: new_uuid
+  changed_when: false
+  when: not uuid_fact_stat.stat.exists
+
+- name: "RHSM | Set final logical UUID (stable)"
+  ansible.builtin.set_fact:
+    rhsm_logical_uuid: >-
+      {{
+        (new_uuid.stdout | trim)
+        if (not uuid_fact_stat.stat.exists)
+        else
+        (
+          (existing_uuid_fact.content | b64decode) | from_json
+        )['dmi.system.uuid']
+      }}
+
+- name: "RHSM | Write /etc/rhsm/facts/uuid.facts (custom dmi.system.uuid)"
+  ansible.builtin.copy:
+    dest: /etc/rhsm/facts/uuid.facts
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {"dmi.system.uuid":"{{ rhsm_logical_uuid }}"}
+
+- name: "RHSM | Store logical UUID for audit"
+  ansible.builtin.copy:
+    dest: /etc/rhsm_logical_uuid
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ rhsm_logical_uuid }}\n"
+
+- name: "RHSM | Update facts to apply custom UUID"
+  ansible.builtin.command: subscription-manager facts --update
+  register: facts_update
+  changed_when: false
+  failed_when: false
+
+- name: "RHSM | Retry register after KB fix"
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - register
+      - --activationkey
+      - "{{ satellite_register_ak | trim }}"
+      - --org
+      - "{{ satellite_register_org | trim }}"
+      - --force
+  register: rhsm_register_retry
+  changed_when: false
+  failed_when: rhsm_register_retry.rc != 0
+  timeout: 300
+2) Dans ton fichier principal (ex: tasks/main.yml), appeler ce rescue
+Tu gardes ton register initial dans un block, et en cas d’échec tu include_tasks.
+Exemple :
+YAML
+Copy code
+- name: "RHSM | Register (main)"
+  block:
+
+    - name: "RHSM | Register (safe, NO shell, single call)"
+      ansible.builtin.command:
+        argv:
+          - subscription-manager
+          - register
+          - --activationkey
+          - "{{ satellite_register_ak | trim }}"
+          - --org
+          - "{{ satellite_register_org | trim }}"
+          - "{{ (satellite_register_force | default(false)) | ternary('--force', omit) }}"
+      register: rhsm_register
+      changed_when: false
+      failed_when: rhsm_register.rc != 0
+      timeout: 300
+
+  rescue:
+
+    - name: "RHSM | Handle duplicate UUID error (422) via dedicated tasks file"
+      ansible.builtin.include_tasks: rhsm_uuid_422_rescue.yml
+
+  always:
+
+    - name: "RHSM | Debug (main + retry)"
+      ansible.builtin.debug:
+        msg:
+          - "MAIN rc={{ rhsm_register.rc | default('N/A') }} stderr={{ rhsm_register.stderr | default('') }}"
+          - "LOGICAL_UUID={{ rhsm_logical_uuid | default('N/A') }}"
+          - "RETRY rc={{ rhsm_register_retry.rc | default('N/A') }} stderr={{ rhsm_register_retry.stderr | default('') }}"
+      verbosity: 1
+
+    - name: "RHSM | Fail clearly if retry still failed (action required)"
+      ansible.builtin.fail:
+        msg: |
+          RHSM registration still failing after applying KB fix (custom dmi.system.uuid + facts cache cleanup).
+          - Logical UUID used: {{ rhsm_logical_uuid | default('N/A') }}
+          - Initial stderr: {{ rhsm_register.stderr | default('') }}
+          - Retry stderr: {{ rhsm_register_retry.stderr | default('') }}
+
+          Next actions:
+          1) Check Satellite setting:
+             Administer -> Settings -> Content -> 'Host Duplicate DMI UUIDs'
+             Add/allow the UUID as per policy (array format), OR
+          2) Regenerate BIOS/DMI UUID at hypervisor/provisioning layer (Terraform/VMware template issue).
+      when:
+        - rhsm_register_retry is defined
+        - rhsm_register_retry.rc is defined
+        - rhsm_register_retry.rc != 0
+3) Bonus (si tu veux appeler le rescue uniquement pour 422)
+Actuellement, le rescue va “fail fast” si ce n’est pas 422, donc c’est déjà safe.
+Mais si tu veux être encore plus strict, tu peux faire :
+YAML
+Copy code
+- include_tasks: rhsm_uuid_422_rescue.yml
+  when: (rhsm_register.stderr | default('')) is search('HTTP error \\(422', ignorecase=True)
+Si tu veux, je peux aussi te proposer une version encore plus “clean” avec :
+tags: [rhsm, register, uuid]
+un handler pour subscription-manager facts --update
+et un set_stats pour exporter le rhsm_logical_uuid dans le job output AAP/GitLab.
