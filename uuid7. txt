@@ -1,0 +1,3 @@
+echo "{\"dmi.system.uuid\":\"$(uuidgen)\"}" > /etc/rhsm/facts/uuid.facts
+subscription-manager facts --update
+subscription-manager facts | grep dmi.system.uuid
