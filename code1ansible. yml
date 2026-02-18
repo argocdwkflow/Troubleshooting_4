@@ -1,0 +1,87 @@
+- name: Detect el9 streams and export latest kernel per stream (one file)
+  vars:
+    satellite_org: "xxxxx"
+    ccv_rhel9_global: "zzzzzz"
+    lifecycle_env: "xxxx"
+    publish_dir: "/pub/kernel-constraints"
+    out_file: "{{ publish_dir }}/constraints_{{ ccv_rhel9_global | regex_replace('[^A-Za-z0-10._-]+','_') }}__{{ lifecycle_env }}__el9_streams.txt"
+
+  block:
+    - name: Ensure publish directory exists
+      ansible.builtin.file:
+        path: "{{ publish_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Get all kernel filenames from CCV/lifecycle
+      ansible.builtin.command: >
+        hammer --csv --no-headers package list
+        --organization "{{ satellite_org }}"
+        --content-view "{{ ccv_rhel9_global }}"
+        --lifecycle-environment "{{ lifecycle_env }}"
+        --search "name = kernel"
+        --per-page 10000
+        --fields filename
+      register: kernel_pkgs
+      changed_when: false
+
+    - name: Normalize filenames list (remove quotes, keep only rpms)
+      ansible.builtin.set_fact:
+        kernel_filenames: >-
+          {{
+            kernel_pkgs.stdout_lines
+            | map('regex_replace','"','')
+            | map('trim')
+            | select('match','.*\\.rpm$')
+            | list
+          }}
+
+    - name: Detect el9 streams present (el9_4, el9_6, el9_8, ...)
+      ansible.builtin.set_fact:
+        el9_streams: >-
+          {{
+            (kernel_filenames | join('\n'))
+            | regex_findall('el9_[0-10]+')
+            | unique
+            | sort
+          }}
+
+    - name: Fail if no el9 streams detected
+      ansible.builtin.fail:
+        msg: "No el9_* streams detected in {{ ccv_rhel9_global }} @ {{ lifecycle_env }}"
+      when: el9_streams | length == 0
+
+    - name: Build latest kernel per stream (sort -V then tail -1)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        s="{{ item }}"
+        printf '%s\n' {{ kernel_filenames | map('quote') | join(' ') }} \
+          | tr ' ' '\n' \
+          | grep -F "$s" \
+          | sort -V \
+          | tail -n 1
+      args:
+        executable: /bin/bash
+      loop: "{{ el9_streams }}"
+      register: latest_per_stream
+      changed_when: false
+
+    - name: Write output file (one line per stream)
+      ansible.builtin.copy:
+        dest: "{{ out_file }}"
+        mode: "0644"
+        content: |
+          # org={{ satellite_org }}
+          # ccv={{ ccv_rhel9_global }}
+          # lifecycle={{ lifecycle_env }}
+          # streams={{ el9_streams | join(',') }}
+          # generated={{ ansible_date_time.iso8601 }}
+          {% for r in latest_per_stream.results %}
+          {{ r.stdout | trim }}
+          {% endfor %}
+
+    - name: Show streams detected
+      ansible.builtin.debug:
+        msg:
+          - "Detected streams: {{ el9_streams }}"
+          - "Wrote: {{ out_file }}"
