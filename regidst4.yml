@@ -1,7 +1,0 @@
-- name: "RHSM | Write /etc/rhsm/facts/uuid.facts"
-  ansible.builtin.copy:
-    dest: /etc/rhsm/facts/uuid.facts
-    owner: root
-    group: root
-    mode: "0644"
-    content: "{{ {'dmi.system.uuid': rhsm_logical_uuid} | to_json }}"
