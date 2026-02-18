@@ -1,0 +1,15 @@
+all=$(hammer --csv --no-headers package list \
+  --organization "$ORG" \
+  --content-view "$CCV" \
+  --lifecycle-environment "$LE" \
+  --search 'name = kernel' \
+  --per-page 10000 \
+  --fields filename \
+  | sed 's/"//g')
+
+streams=$(echo "$all" | grep -oE 'el9_[0-9]+' | sort -uV)
+
+for s in $streams; do
+  echo "Latest for $s:"
+  echo "$all" | grep "$s" | sort -V | tail -n1
+done
