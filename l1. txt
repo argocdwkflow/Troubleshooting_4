@@ -1,0 +1,12 @@
+
+Root Cause Analysis – Disk Space and Reclaim Behavior
+The observed discrepancy between SAN utilization and the operating system reporting the disk group as full is related to thin provisioning and logical allocation behavior.
+On the PowerMax storage array, the LUNs are configured as thin devices (TDEV). This means the array only consumes physical storage blocks when data is actually written. Therefore, the SAN correctly physical usage because only that portion of data has been written and stored in the backend pool.
+However, at the Veritas Volume Manager (VxVM) level, the disk group has logically allocated 100% of the available LUN capacity to volumes and subdisks. Even if those blocks do not contain real data yet, they are considered allocated within the disk group. As a result, VxVM reports no free space remaining.
+Additionally, the presence of “thinrclm failing” messages indicates that thin reclamation (UNMAP) operations are not successfully returning unused blocks back to the storage array. While this does not immediately cause data loss, it may contribute to performance degradation and inefficient space management.
+The corrective action is to increase logical capacity at the disk group level (by extending existing LUNs or adding new LUNs) and to verify thin reclaim configuration and SAN pool health.
+
+Here is a short and professional closing statement in English:
+Conclusion
+The issue has been identified as a logical disk allocation inconsistency combined with thin provisioning behavior, rather than a physical storage capacity problem. Both cluster nodes are operational, and the SAN backend is not saturated. However, logical disk group capacity and disk visibility must remain fully consistent across both servers to ensure stable failover and performance.
+Corrective actions include validating SAN presentation on both nodes, ensuring disk group capacity alignment, and confirming proper thin reclaim configuration. Continuous monitoring of CPU, I/O latency, and disk group free space is recommended to prevent recurrence.
