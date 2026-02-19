@@ -1,0 +1,13 @@
+Voici une explication claire et structurée d’environ 250 mots :
+Les messages que vous observez dans les logs indiquent une instabilité au niveau du stockage SAN, plus précisément sur les liens Fibre Channel utilisés pour accéder aux disques partagés. Les lignes répétées contenant :
+Copy code
+
+COLLISION - Link XXX persistent collision accessing TRN ... retrying
+signifient que Veritas (VxVM / CVM) tente d’accéder à une ressource disque partagée, mais rencontre un conflit d’accès persistant. Le terme TRN (Transaction Record Number) correspond à une structure interne utilisée par Veritas pour gérer la cohérence des accès disque en environnement cluster. Une “persistent collision” indique que les opérations d’I/O ne sont pas correctement confirmées par le stockage, ce qui force le système à réessayer continuellement.
+Les messages :
+Copy code
+
+DOWN - Link FBE_SWF1_RCV down
+indiquent clairement qu’un ou plusieurs chemins Fibre Channel sont tombés. Cela signifie qu’un lien physique ou logique vers le SAN est devenu indisponible. Lorsque cela se produit, le multipathing (DMP / device-mapper) tente de basculer vers un autre chemin disponible. Toutefois, si plusieurs chemins sont instables ou flappent (passage Online/Linkdown), cela provoque des délais d’accès disque, des timeouts SCSI, et des erreurs I/O au niveau du kernel.
+Ce comportement n’indique pas un problème RAID local ni un défaut de disque interne. La cause probable se situe côté infrastructure SAN : switch Fibre Channel, câble optique, module SFP, zoning incorrect ou instabilité du fabric.
+En résumé, ces logs traduisent une perte intermittente ou persistante de connectivité SAN entraînant des collisions d’accès disque et des ralentissements applicatifs.
