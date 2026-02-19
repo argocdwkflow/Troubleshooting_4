@@ -1,9 +1,0 @@
-Root cause identified: SSL key database (GSKit) cannot be unlocked after RHEL9.6 upgrade due to stash/password inconsistency. Apache fails to initialize secure transport, preventing Refweb startup.
-Recommended action: Middleware team to regenerate stash file using RHEL9 GSKit version instead of reverting VM snapshot. Snapshot rollback is not recommended due to environment integrity risks.
-
-
-Following the in-place upgrade from RHEL 8 to RHEL 9.6 using Leapp, the Refweb application in the Acceptance environment failed to start. Investigation of Apache (was_ap24) logs identified SSL initialization errors related to GSKit security components. The primary error observed was GSK_ERROR_BAD_KEYFILE_PASSWORD, followed by messages indicating failure to initialize the GSK environment and inability to establish secure transports.
-Refweb relies on the WebSphere plugin and GSKit to manage SSL communication using a key database file (.kdb) and an associated stash file (.sth) containing the encrypted password. After the OS upgrade, GSKit was unable to unlock the key database, indicating a mismatch or corruption of the stash file, an incorrect key database password, or an invalid file path reference in the plugin configuration.
-As a result, Apache could not initialize secure communication channels, causing the WebSphere plugin to fail and preventing Refweb from starting.
-The recommended resolution is for the Middleware team to validate the key database password and regenerate the stash file using the GSKit version compatible with RHEL 9. Snapshot rollback is not recommended due to integrity and consistency risks.
-
