@@ -1,0 +1,58 @@
+[Unit]
+Description=Confluent Platform: ZooKeeper
+Documentation=http://www.confluent.io/
+Wants=network-online.target
+After=network-online.target remote-fs.target nss-lookup.target
+
+[Service]
+Type=simple
+User=kafka
+Group=kafka
+SyslogIdentifier=confluent-zookeeper
+
+# --- Environment (IMPORTANT) ---
+Environment="JAVA_HOME=/apps/kafka/jdk"
+Environment="PATH=/apps/kafka/jdk/bin:/apps/kafka/confluent/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+EnvironmentFile=-/apps/kafka/etc/zookeeper/zookeeper.env
+
+# --- Working directory (optional but nice) ---
+WorkingDirectory=/apps/kafka
+
+# --- Start/Stop ---
+ExecStart=/apps/kafka/confluent/bin/zookeeper-server-start /apps/kafka/etc/zookeeper/zookeeper.properties
+ExecStop=/apps/kafka/confluent/bin/zookeeper-server-stop
+
+# --- Logging ---
+StandardOutput=journal
+StandardError=journal
+
+# --- Limits / runtime safety ---
+LimitNOFILE=1048576
+LimitNPROC=65535
+TasksMax=infinity
+
+# Give Java time to init + avoid false fails
+TimeoutStartSec=180
+TimeoutStopSec=120
+
+# Restart policy (recommandé en prod)
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+# Stop behavior: don't SIGKILL too fast
+KillSignal=SIGTERM
+KillMode=control-group
+SendSIGKILL=no
+FinalKillSignal=SIGKILL
+
+# Hardening (safe defaults; adjust if app needs more)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/apps/kafka
+
+[Install]
+WantedBy=multi-user.target
