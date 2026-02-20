@@ -1,0 +1,4 @@
+for h in /sys/class/fc_host/host*; do
+  echo "== $h =="; cat $h/port_state $h/port_speed;
+  for s in $h/statistics/*; do echo "$s: $(cat $s)"; done
+done
