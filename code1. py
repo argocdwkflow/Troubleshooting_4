@@ -1,0 +1,10 @@
+python3 - <<'PY'
+import json, subprocess, sys
+try:
+    out = subprocess.check_output(["findmnt","-J","-o","TARGET,SOURCE,FSTYPE"], text=True)
+    data = json.loads(out)
+    for fs in data.get("filesystems", []):
+        print(fs["target"])
+except Exception as e:
+    print("ERROR:", e)
+PY
